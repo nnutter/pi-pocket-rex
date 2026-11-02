@@ -1,0 +1,78 @@
+{
+    "name": "rex",
+    "title": "Rex",
+    "description": "Rex: a real terminal in Pi Pocket, beside a session or as a page of its own. Ghostty's own engine (libghostty-vt) draws the screen, so an editor's cursor shapes, its icons, and its clipboard work. It needs Bun, and a runtime folder of its own, ~/.pi-pocket/rex.",
+    "tags": [
+        "terminal",
+        "shell",
+        "pty",
+        "rex",
+        "ghostty",
+        "neovim",
+        "editor"
+    ],
+    "author": {
+        "name": "Nathan Nutter",
+        "github": "nnutter"
+    },
+    "version": "0.1.0",
+    "source": {
+        "repo": "nnutter/pi-pocket-rex",
+        "commit": "31956c37ee7c99c745fb6a7ea8b24e77aef2d98a",
+        "path": "extensions"
+    },
+    "files": [
+        {
+            "name": "rex.ts",
+            "sha256": "fc18d3d8e06a83be64682fe85c3f805b7069c73041fb47376f9feeb7946e812f",
+            "size": 21151
+        },
+        {
+            "name": "rex/index.js",
+            "sha256": "9f4f48a50dc0bae8b3a1f7d2897852b48ff60451fb296b941a420681d38b7cb5",
+            "size": 20514
+        },
+        {
+            "name": "rex/terminal.js",
+            "sha256": "3ac5b4b63231171d65d1e72a8c876a4d531aa74fe055951140948e5596992df1",
+            "size": 36208
+        },
+        {
+            "name": "rex/terminals.js",
+            "sha256": "6ac4a16d5a2243e5c3bce4fe6049ae4df20b17fea632ec133642c8eab9aed53f",
+            "size": 7021
+        },
+        {
+            "name": "rex/terminal.css",
+            "sha256": "aecb41f865a454cd98f5a91f23e3dadf145e8c71a80133880c53fe9c3c1d377f",
+            "size": 13871
+        }
+    ],
+    "pocketApi": 2,
+    "minPocket": "0.22.0",
+    "declares": {
+        "extensions": [
+            "rex"
+        ],
+        "tools": [],
+        "readOnlyTools": [],
+        "hooks": [],
+        "sections": [],
+        "wraps": [],
+        "routes": [
+            "GET terminals",
+            "POST terminals",
+            "GET terminals/:id",
+            "POST terminals/:id/input",
+            "POST terminals/:id/paste",
+            "POST terminals/:id/focus",
+            "POST terminals/:id/clipboard",
+            "POST terminals/:id/resize",
+            "POST terminals/:id/scroll",
+            "DELETE terminals/:id"
+        ],
+        "client": "owner",
+        "access": "owner"
+    },
+    "revoked": []
+}
