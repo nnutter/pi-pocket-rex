@@ -197,6 +197,10 @@ export class TerminalView {
     #bellTimer = null;
     #wheel = 0;
     #pendingScroll = 0;
+    /** What has not been sent to the terminal yet, oldest first. */
+    #waiting = [];
+    /** Whether a request of the queue is on its way: only one is, so that the order of what a person did is kept. */
+    #sending = false;
 
     constructor(pocket, { container, onState, onClose, keyboardUp, target }) {
         this.#pocket = pocket;
@@ -700,9 +704,7 @@ export class TerminalView {
 
     /** Text from a paste: the server wraps it when the program asked for a bracketed paste. */
     #paste(text) {
-        if (this.#id === null || this.#destroyed) return;
-
-        this.#pocket.api(`terminals/${this.#id}/paste`, { text }).catch(() => {});
+        this.#send({ paste: text });
     }
 
     /** Tells the program whether this terminal has the person's attention. */
@@ -738,10 +740,42 @@ export class TerminalView {
         }, 40);
     }
 
+    /**
+     * Sends one thing to the terminal, after everything that came before it.
+     *
+     * A keystroke is a request of its own, and requests that are all on their way at once are answered in whatever order
+     * the server reaches them: a line that was typed quickly arrived as `pritfn`, and characters of it were lost. So one
+     * request is on its way at a time, and the characters that are typed while it is take one request between them.
+     */
     #send(body) {
         if (this.#id === null || this.#destroyed) return;
 
-        this.#pocket.api(`terminals/${this.#id}/input`, body).catch(() => {});
+        const last = this.#waiting.at(-1);
+
+        // Only what has not started: the text of a burst of typing joins the request that is waiting to go, which is
+        // one keystroke's worth of a phone's keyboard and a whole paste of a terminal's own.
+        if (body.text !== undefined && last?.text !== undefined) last.text += body.text;
+        else this.#waiting.push({ ...body });
+
+        void this.#flush();
+    }
+
+    /** Sends what waits, one request at a time, until nothing is left. */
+    async #flush() {
+        if (this.#sending) return;
+
+        this.#sending = true;
+
+        try {
+            for (let body = this.#waiting.shift(); body !== undefined; body = this.#waiting.shift()) {
+                const path = body.paste === undefined ? "input" : "paste";
+                const sent = body.paste === undefined ? body : { text: body.paste };
+
+                await this.#pocket.api(`terminals/${this.#id}/${path}`, sent).catch(() => {});
+            }
+        } finally {
+            this.#sending = false;
+        }
     }
 
     /** Opens the shell: the one that the session keeps, or, asked, a new one. */
@@ -1002,6 +1036,7 @@ export class TerminalView {
 
     destroy() {
         this.#destroyed = true;
+        this.#waiting.length = 0;
         clearTimeout(this.#resizeTimer);
         clearTimeout(this.#scrollTimer);
         clearTimeout(this.#flashTimer);
