@@ -150,8 +150,15 @@ A person's own Nerd font is one line away — put its name above `"Pocket Mono"`
 mise run preview      # a page with a real Rex terminal at http://127.0.0.1:4711, without Pi Pocket
 mise run test         # everything: the runner, the client, the module, and the page in a browser
 mise run test:fast    # everything that needs no browser
-mise run check        # typecheck, and parse the browser module as a browser does
+mise run check        # typecheck, and parse the browser modules as a browser does
 ```
+
+The same two commands are what CI runs: `.github/workflows/ci.yml` checks and runs `test:fast` on every pull request.
+It takes the types of Pi Pocket's extension API from the copy that Pi Pocket publishes, because a checkout has none — Pi
+Pocket writes them beside an installed drop-in, not in a repository.
+
+The browser tests are not in CI, and the reason is Rex: they drive the page against a real Rex server, and Rex is not
+installable without an account. Run them on a machine that has it, with `mise run test`.
 
 `scripts/preview.ts` starts a Rex server of its own, in a temporary state folder and on a port of its own, creates a
 session with a shell in it, and serves the module's routes behind a small HTTP server. **It must never use a server that

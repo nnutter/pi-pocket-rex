@@ -5,6 +5,8 @@
     "scripts": {
         "install-extension": "bun run scripts/install.ts",
         "test": "bun test",
+        "test:fast": "bun test test/escapes.test.ts test/rex-client.test.ts test/rex-host.test.ts test/hosts.test.ts test/picker.test.ts test/module.test.ts test/module-errors.test.ts test/gallery.test.ts test/web.test.ts",
+        "check": "tsc --noEmit && node --check extensions/rex/index.js && node --check extensions/rex/terminal.js && node --check extensions/rex/picker.js",
         "typecheck": "tsc --noEmit"
     },
     "dependencies": {
