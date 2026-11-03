@@ -955,6 +955,43 @@ describe("the width of a run", () => {
     }, 30_000);
 });
 
+describe("typing into the terminal", () => {
+    /**
+     * A phone's keyboard gives one character at a time, and so does a person at a fast one. Each character was a request
+     * of its own, and requests that are all on their way at once are answered in whatever order the server reaches them:
+     * a line typed quickly came out as `pritfn`, and characters of it were never seen by the shell at all.
+     */
+    test("keeps a line that is typed quickly, whole and in order", async () => {
+        const page = await openPanel();
+
+        try {
+            await page.evaluate(() => {
+                const input = document.querySelector(".gt-input") as HTMLTextAreaElement;
+
+                input.focus();
+
+                // One character a time, as a keyboard sends them, with no pause between: the burst that lost them.
+                for (const char of "echo keptcharacters") {
+                    input.value = char;
+                    input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+                }
+            });
+            await settle(page, 1500);
+
+            const echoed = await page.evaluate(
+                () =>
+                    [...document.querySelectorAll(".gt-row")]
+                        .map((row) => row.textContent ?? "")
+                        .find((text) => text.includes("echo")) ?? "",
+            );
+
+            expect(echoed).toContain("echo keptcharacters");
+        } finally {
+            await page.close();
+        }
+    }, 30_000);
+});
+
 describe("the surface it shows on", () => {
     test("says which surface a tap gives, and moves the shell there", async () => {
         const page = await openPanel();
