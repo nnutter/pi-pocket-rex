@@ -102,6 +102,10 @@ and the module drops both:
 A dropped connection resumes from the byte that the module has, because the server keeps a stream for a minute after its
 connection goes. That is what keeps a phone that lost its signal from losing the screen it was drawing.
 
+The extension's screen only watches: the program talks to **Rex's** terminal, which answers its questions, such as where
+the cursor is. An answer from the watching screen would reach the program a second time — `^[[21;1R` at a shell prompt,
+because by then the shell is no longer waiting for one.
+
 ## Settings
 
 In Menu → Extensions: the socket of this machine's Rex server, the other machines (`label = host`, one for each line),

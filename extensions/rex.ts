@@ -519,9 +519,6 @@ export default function createRex(_host: Host | null, web: Web) {
             terminal.markReady();
         } else if (message.t === "exit") {
             if (terminal.alive) ended(terminal, typeof message.code === "number" ? message.code : null);
-        } else if (message.t === "write") {
-            // What the terminal answered a program: the control connection types it into the block, as a person would.
-            type(terminal, Buffer.from(String(message.data ?? ""), "base64").toString("latin1")).catch(() => {});
         } else if (message.t === "clipboard") {
             // A program copied something: the clipboard is the browser's and the system's, so the page writes it.
             web.send("clipboard", { id: terminal.id, selection: message.selection, text: message.text });

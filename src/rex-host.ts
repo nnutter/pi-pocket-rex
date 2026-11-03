@@ -36,9 +36,10 @@ function handle(message: Record<string, unknown>): void {
             rows: Number(message.rows ?? 24),
             maxScrollback: Number(message.maxScrollback ?? 5000),
             onFrame: (frame) => write({ t: "frame", ...frame }),
-            // What the terminal itself answers a program: a device-attributes reply, a cursor-position report. A pty
-            // host would write it to the pty; this one hands it to the module, which types it into the Rex terminal.
-            onWritePty: (answer) => write({ t: "write", data: Buffer.from(answer).toString("base64") }),
+            // Nothing. The program talks to Rex's terminal, which answers it: a cursor-position report, a device
+            // attribute, all of it. This screen only watches, and an answer of its own would reach the program a second
+            // time, as text at its prompt (`^[[21;1R`), because by then it is no longer waiting for one.
+            onWritePty: () => {},
             onBell: () => write({ t: "bell" }),
             onClipboard: (selection, text) => {
                 write({ t: text === null ? "clipboard-query" : "clipboard", selection, text });

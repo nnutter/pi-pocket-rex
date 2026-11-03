@@ -204,16 +204,17 @@ describe("the screen that the module starts", () => {
         expect(textOf(top)).toContain("line 0");
     });
 
-    test("takes back the question that a program asked, and hands the answer to the module", async () => {
+    test("answers nothing itself, because the program talks to Rex's terminal and not to this one", async () => {
         const screen = runnerWith();
 
         await screen.wait("ready");
-        // A device-attributes query: the terminal answers a real one with its name and version.
-        screen.feed("\u001b[c");
 
-        const answer = await screen.wait<Event & { data: string }>("write");
+        // The two questions that a line editor asks on every redraw: where the cursor is, and what the terminal is.
+        screen.feed("\u001b[6n\u001b[c");
+        await Bun.sleep(200);
 
-        expect(Buffer.from(answer.data, "base64").toString("utf8").startsWith("\u001b[?")).toBe(true);
+        // An answer from here would reach the program a second time, as text at its prompt: `^[[21;1R`.
+        expect(screen.events.filter((each) => each.t === "write")).toEqual([]);
     });
 
     test("says when a program copies to the clipboard", async () => {
