@@ -359,9 +359,12 @@ export default function createRex(_host: Host | null, web: Web) {
         sessions: readonly WebSession[],
         cols: number,
         rows: number,
+        fresh = false,
     ): Promise<string> {
         const client = await online(host);
-        const label = (sessions.find((each) => each.id === conversation)?.title ?? "").trim();
+        // A shell that a person asks for by name -- the bar's New shell -- is a session of its own, whatever the
+        // conversation is called.
+        const label = fresh ? "" : (sessions.find((each) => each.id === conversation)?.title ?? "").trim();
 
         if (label !== "") {
             const found = (await client.sessions()).find((each) => (each.label ?? "").trim() === label);
@@ -914,10 +917,11 @@ export default function createRex(_host: Host | null, web: Web) {
         // A page that names a session shows that one. A page that names none is this conversation's own terminal, which
         // is a session of the person's on this machine, made for the conversation the first time that it is asked for.
         const named = String(request.body.host ?? "") !== "" && String(request.body.session ?? "") !== "";
+        // The bar's New shell: another shell where this one is, rather than the one that is already there.
+        const fresh = request.body.new === true;
         const host = named ? await hostOf(String(request.body.host)) : await ownHost();
-        const sessionId = named
-            ? String(request.body.session)
-            : await ownSession(host, conversation, request.sessions(), cols, rows);
+        const sessionId =
+            named && !fresh ? String(request.body.session) : await ownSession(host, conversation, request.sessions(), cols, rows, fresh);
 
         // One terminal for each block: a page that reloads finds the one that it left rather than a second stream.
         const existing = [...terminals.values()].find(

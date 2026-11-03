@@ -375,3 +375,28 @@ test("asks for a machine's name and its address", async () => {
         status: 400,
     });
 });
+
+test("starts another shell where this one is when the bar asks for a new one", async () => {
+    const server = serve({ sessions: [{ session_id: "session:1", label: "Here" }] });
+    const fake = module(server);
+
+    const first = await fake.call<{ terminal: Summary }>({
+        method: "POST",
+        path: "terminals",
+        body: { conversation: 7, cols: 40, rows: 6 },
+    });
+
+    // The conversation's own session is the one that is already named after it.
+    expect(first.terminal.session).toBe("session:1");
+
+    server.requests.length = 0;
+
+    const second = await fake.call<{ terminal: Summary }>({
+        method: "POST",
+        path: "terminals",
+        body: { conversation: 7, cols: 40, rows: 6, new: true },
+    });
+
+    expect(server.requests.map((each) => each.method)).toContain("session.create");
+    expect(second.terminal.session).not.toBe(first.terminal.session);
+});
