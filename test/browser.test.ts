@@ -44,7 +44,7 @@ beforeAll(async () => {
 
     for (;;) {
         try {
-            const answer = await fetch(`${URL_BASE}/api/terminals`);
+            const answer = await fetch(`${URL_BASE}/api/x/rex/terminals`);
 
             if (answer.ok) break;
         } catch {
@@ -165,6 +165,41 @@ async function keyboardCovers(page: Page, height: number): Promise<void> {
     await settle(page, 600);
 }
 
+/**
+ * A page that records what it says about its own tab: the hello that it sends when it loads, and the goodbye that it
+ * sends when it goes. The module runs in the preview's server, so what the page sends is what a test can see.
+ */
+async function openWithTabLog(): Promise<Page> {
+    const page = await browser.newPage();
+
+    await page.evaluateOnNewDocument(() => {
+        const said: Array<{ url: string; body: string }> = [];
+
+        (window as unknown as { said: typeof said }).said = said;
+
+        const original = window.fetch.bind(window);
+
+        window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input);
+
+            if (url.includes("/tabs")) said.push({ url, body: String(init?.body ?? "") });
+
+            return original(input, init);
+        }) as typeof fetch;
+    });
+
+    await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
+    await page.goto(`${URL_BASE}/`, { waitUntil: "networkidle2" });
+    await page.waitForSelector(".gt-panes .gt-row");
+    await settle(page, 400);
+
+    return page;
+}
+
+/** What the page has said about its tab so far. */
+const tabSaid = (page: Page) =>
+    page.evaluate(() => (window as unknown as { said: Array<{ url: string; body: string }> }).said ?? []);
+
 /** A finger on an element: a touch, as a phone sends one. */
 async function tap(page: Page, selector: string): Promise<void> {
     const element = await page.$(selector);
@@ -282,6 +317,36 @@ describe("the row above a soft keyboard", () => {
             await keyboardDown(page);
 
             expect(await rowShown(page)).toBe(false);
+        } finally {
+            await page.close();
+        }
+    }, 30_000);
+});
+
+describe("the tab of the app", () => {
+    /**
+     * A shell lives in Rex, not in the page, so the page says which tab it is: a hello when it loads, and a goodbye when
+     * it goes. The module ends what no tab is watching when the last one has gone, and it cannot know that any other
+     * way -- every tab of Pi Pocket shares one Rex client.
+     */
+    test("says that it is here, and says goodbye when it goes", async () => {
+        const page = await openWithTabLog();
+
+        try {
+            const hello = await tabSaid(page);
+
+            expect(hello).toHaveLength(1);
+            expect(hello[0]!.url).toEndWith("/tabs");
+            expect(typeof (JSON.parse(hello[0]!.body) as { tab?: unknown }).tab).toBe("string");
+
+            await page.evaluate(() => dispatchEvent(new PageTransitionEvent("pagehide")));
+            await settle(page, 300);
+
+            const goodbye = (await tabSaid(page)).at(-1)!;
+
+            expect(goodbye.url).toEndWith("/tabs/gone");
+            // The same tab as the hello: the module takes back the goodbye of the tab that comes back.
+            expect(JSON.parse(goodbye.body)).toMatchObject(JSON.parse(hello[0]!.body) as Record<string, unknown>);
         } finally {
             await page.close();
         }

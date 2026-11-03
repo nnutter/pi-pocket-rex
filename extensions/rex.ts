@@ -51,6 +51,9 @@ const KEEP_ENDED_MS = 15 * 60_000;
 /** How long a runner has to say that its screen is up. */
 const RUNNER_START_MS = 10_000;
 
+/** How long a tab that said goodbye waits for another tab to come back: a reload is a goodbye and a hello. */
+const TAB_GRACE_MS = 10_000;
+
 /** One terminal: a block in a Rex session, the runner that draws it, and the screen as it was after the last frame. */
 interface Terminal {
     id: string;
@@ -90,6 +93,18 @@ interface Terminal {
 
 export default function createRex(_host: Host | null, web: Web) {
     const terminals = new Map<string, Terminal>();
+
+    /**
+     * The tabs of the app that have this module loaded, by the name that each one made for itself.
+     *
+     * A shell lives in Rex, not in a tab, so the shells that this module opened outlive the page that opened them. The
+     * last tab is the one thing that says that nobody is watching, and it is then that the blocks close and the
+     * sessions that they leave empty go with them.
+     */
+    const tabs = new Set<string>();
+
+    /** The goodbye that waits for a tab to come back, while one waits. */
+    let leaving: ReturnType<typeof setTimeout> | null = null;
 
     /** The socket that a Rex server on this machine listens on, which is what `rex server status` prints. */
     function defaultSocket(): string {
@@ -818,6 +833,59 @@ export default function createRex(_host: Host | null, web: Web) {
         }
     }
 
+    /**
+     * Ends what no tab is watching: every block that this module opened is closed, and a session that is left with no
+     * block goes with it.
+     *
+     * Rex closes a window by itself when its last block leaves, and it keeps the session: an empty session is the one
+     * thing that a tab which has gone leaves behind in Rex. A session that still holds a block is not this module's to
+     * end, since that block is a program that a person started in Rex.
+     */
+    async function letGo(): Promise<void> {
+        // One look at each session, taken before the watch ends: two terminals can share a session, and it is empty
+        // only once both of them have gone.
+        const sessions = new Map<string, Terminal>();
+
+        for (const terminal of [...terminals.values()]) {
+            const key = `${terminal.hostKey}\u0000${terminal.sessionId}`;
+
+            if (!sessions.has(key)) sessions.set(key, terminal);
+
+            const client = terminal.client;
+            const { sessionId, blockId } = terminal;
+
+            unwatch(terminal);
+
+            await client.call("block.close", { session_id: sessionId, block_id: blockId }).catch(() => {});
+        }
+
+        for (const terminal of sessions.values()) {
+            const left = await terminal.client
+                .call<{ blocks?: Array<{ block_id?: string | null }> | null }>("session.list_blocks", {
+                    session_id: terminal.sessionId,
+                })
+                .catch(() => null);
+
+            // A session that cannot be asked is left alone: an empty session in Rex is better than a session that a
+            // call which failed cannot tell from one that another program is using.
+            if (left === null || (left.blocks ?? []).length > 0) continue;
+
+            await terminal.client.call("session.destroy", { session_id: terminal.sessionId }).catch(() => {});
+        }
+    }
+
+    /** Waits a moment for a tab to come back before ending what the last one was watching. */
+    function waitForTab(): void {
+        if (leaving !== null) clearTimeout(leaving);
+
+        leaving = setTimeout(() => {
+            leaving = null;
+            void letGo();
+        }, TAB_GRACE_MS);
+
+        leaving.unref?.();
+    }
+
     /** Ends the terminals of the sessions that this person sees as archived, for an archive that this module did not hear. */
     function closeArchived(sessions: readonly WebSession[]): void {
         for (const session of sessions) {
@@ -847,6 +915,35 @@ export default function createRex(_host: Host | null, web: Web) {
 
         return Number.isFinite(number) && number >= least && number <= most ? number : fallback;
     }
+
+    /**
+     * A tab of the app says that it is here, and says goodbye when it goes.
+     *
+     * The module ends what no tab is watching when the last one goes. A reload is a goodbye and a hello, a moment
+     * apart, so a hello takes back the goodbye that waits.
+     */
+    web.route("POST", "tabs", (request) => {
+        const tab = String(request.body.tab ?? "");
+
+        if (tab !== "") {
+            tabs.add(tab);
+
+            if (leaving !== null) {
+                clearTimeout(leaving);
+                leaving = null;
+            }
+        }
+
+        return { ok: true };
+    });
+
+    web.route("POST", "tabs/gone", (request) => {
+        const tab = String(request.body.tab ?? "");
+
+        if (tab !== "" && tabs.delete(tab) && tabs.size === 0) waitForTab();
+
+        return { ok: true };
+    });
 
     // The picker's own call: every machine, with the sessions under it, as Rex shows them.
     web.route("GET", "hosts", async () => ({ hosts: await Promise.all((await hostList()).map((host) => describe(host))) }));
@@ -1063,6 +1160,10 @@ export default function createRex(_host: Host | null, web: Web) {
     web.client("rex");
 
     web.onDispose(() => {
+        if (leaving !== null) clearTimeout(leaving);
+
+        leaving = null;
+
         for (const terminal of terminals.values()) {
             terminal.stream?.close();
             terminal.proc.kill();

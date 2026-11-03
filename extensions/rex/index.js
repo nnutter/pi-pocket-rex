@@ -454,6 +454,44 @@ function TerminalPage({ pocket, close, setOpen, surface, onSwitch, target, onCho
     </div>`;
 }
 
+/**
+ * Tells the module which tab this is.
+ *
+ * A shell lives in Rex rather than in this page, so a tab that closes leaves it running. The module ends the shells that
+ * no tab is watching when the last tab goes, and to know that, it has to hear from every tab: a hello when a page loads,
+ * and a goodbye when it goes. A reload is both, a moment apart, and the module waits that moment for the hello.
+ */
+function followTab(pocket) {
+    const tab = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+    const base = `/api/x/${pocket.module}/tabs`;
+    const headers = { "content-type": "application/json", "x-pocket": "1" };
+
+    const say = (path, keepalive) =>
+        fetch(`${base}${path}`, { method: "POST", headers, keepalive, body: JSON.stringify({ tab }) }).catch(() => {});
+
+    const hello = () => void say("", false);
+
+    // The page is going, and the request that says so has to outlive it: `keepalive` is what asks a browser to send one
+    // that a page's end does not cancel, and a beacon cannot carry the `X-Pocket` header that every route of the app
+    // wants. One that the browser drops leaves the shell in Rex, which is the worst that a goodbye can do.
+    const goodbye = () => void say("/gone", true);
+
+    // A page that comes back from the back and forward cache was never loaded again, so the hello that the module has is
+    // the one from before it went: a page that the browser kept says that it is here again.
+    const back = (event) => {
+        if (event.persisted) hello();
+    };
+
+    hello();
+    addEventListener("pagehide", goodbye);
+    addEventListener("pageshow", back);
+
+    pocket.onDispose(() => {
+        removeEventListener("pagehide", goodbye);
+        removeEventListener("pageshow", back);
+    });
+}
+
 export default function setup(pocket) {
     const { html } = pocket;
 
@@ -611,4 +649,8 @@ export default function setup(pocket) {
 
     document.addEventListener("keydown", onKey, true);
     pocket.onDispose(() => document.removeEventListener("keydown", onKey, true));
+
+    // The tabs of the app say that they are here, so that the shells of the last one that goes do not keep a session
+    // alive in Rex.
+    followTab(pocket);
 }

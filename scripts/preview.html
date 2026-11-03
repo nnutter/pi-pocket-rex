@@ -91,6 +91,7 @@
             const screens = new Map();
 
             const pocket = {
+                module: "rex",
                 html,
                 h,
                 Fragment,
@@ -142,7 +143,7 @@
                 },
                 api: async (path, body, options = {}) => {
                     const method = options.method ?? (body === undefined ? "GET" : "POST");
-                    const answer = await fetch("/api/" + path, {
+                    const answer = await fetch("/api/x/" + pocket.module + "/" + path, {
                         method,
                         headers: { "content-type": "application/json" },
                         body: body === undefined ? undefined : JSON.stringify(body),
