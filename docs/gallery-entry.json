@@ -18,34 +18,34 @@
     "version": "0.1.0",
     "source": {
         "repo": "nnutter/pi-pocket-rex",
-        "commit": "31956c37ee7c99c745fb6a7ea8b24e77aef2d98a",
+        "commit": "8350dfcd24963840a76d3331719370b25e9af6e2",
         "path": "extensions"
     },
     "files": [
         {
             "name": "rex.ts",
-            "sha256": "fc18d3d8e06a83be64682fe85c3f805b7069c73041fb47376f9feeb7946e812f",
-            "size": 21151
+            "sha256": "4b93b0614095d50c4c6f98103b5313953ce4a1c8eb249f12a798c5d0aaa17ab6",
+            "size": 40792
         },
         {
             "name": "rex/index.js",
-            "sha256": "9f4f48a50dc0bae8b3a1f7d2897852b48ff60451fb296b941a420681d38b7cb5",
-            "size": 20514
+            "sha256": "8137028f64e2bd6966967d9eb2883777a218cebb7c812281fba56c9b601b5242",
+            "size": 22507
         },
         {
             "name": "rex/terminal.js",
-            "sha256": "3ac5b4b63231171d65d1e72a8c876a4d531aa74fe055951140948e5596992df1",
-            "size": 36208
+            "sha256": "a2469ee7cadfc15d38e54b6e8ddb54c3e67d54e3ccd13e5ed1b61915bca61a07",
+            "size": 36365
         },
         {
-            "name": "rex/terminals.js",
-            "sha256": "6ac4a16d5a2243e5c3bce4fe6049ae4df20b17fea632ec133642c8eab9aed53f",
-            "size": 7021
+            "name": "rex/picker.js",
+            "sha256": "139c57aa99fa4c5577cf353c48abb1585a8175a13316d7c135bc69c937851600",
+            "size": 7845
         },
         {
             "name": "rex/terminal.css",
-            "sha256": "aecb41f865a454cd98f5a91f23e3dadf145e8c71a80133880c53fe9c3c1d377f",
-            "size": 13871
+            "sha256": "f60172fb6d2dacc439fd1e0cf2928bf726fabcd014a0f3ea157f441cfb86af9a",
+            "size": 16697
         }
     ],
     "pocketApi": 2,
@@ -60,6 +60,7 @@
         "sections": [],
         "wraps": [],
         "routes": [
+            "GET hosts",
             "GET terminals",
             "POST terminals",
             "GET terminals/:id",
