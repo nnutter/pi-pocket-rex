@@ -80,3 +80,11 @@ test("refuses a machine that the list does not have", async () => {
         }),
     ).rejects.toMatchObject({ status: 404 });
 });
+
+test("says where to add a machine when this machine has no server of its own", async () => {
+    const fake = module(serve(), { local: "/nonexistent/rex/server.sock" });
+
+    await expect(
+        fake.call({ method: "POST", path: "machines", body: { label: "build", endpoint: "build.example.ts.net" } }),
+    ).rejects.toMatchObject({ status: 503 });
+});

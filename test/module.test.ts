@@ -347,3 +347,31 @@ test("starts a session for the picker's own row, and says where it is", async ()
         ],
     });
 });
+
+test("adds a machine to the list that Rex keeps, so that Rex.app shows it too", async () => {
+    const server = serve();
+    const fake = module(server);
+
+    server.requests.length = 0;
+
+    const answer = await fake.call<{ ok: boolean; label: string; endpoint: string }>({
+        method: "POST",
+        path: "machines",
+        body: { label: " build ", endpoint: " build.example.ts.net " },
+    });
+
+    expect(answer).toMatchObject({ ok: true, label: "build", endpoint: "build.example.ts.net" });
+    expect(server.requests[0]).toMatchObject({
+        method: "hosts.put",
+        payload: { host: { label: "build", endpoints: ["build.example.ts.net"], added_from: "Pi Pocket" } },
+    });
+});
+
+test("asks for a machine's name and its address", async () => {
+    const server = serve();
+    const fake = module(server);
+
+    await expect(fake.call({ method: "POST", path: "machines", body: { label: "build" } })).rejects.toMatchObject({
+        status: 400,
+    });
+});

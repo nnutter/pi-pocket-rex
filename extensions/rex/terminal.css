@@ -686,3 +686,33 @@
 .gt-where-host {
     opacity: 0.75;
 }
+
+/* The two fields that name a machine, and the buttons that take or leave it: a small card, because a phone has no room
+ * for a row of them. */
+.gt-add {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    padding: 0.55rem;
+    border: 1px solid var(--line);
+    border-radius: 0.5rem;
+    background: var(--card);
+}
+
+.gt-add-name,
+.gt-add-host {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 0.45rem 0.6rem;
+    border: 1px solid var(--line);
+    border-radius: 0.45rem;
+    background: var(--surface, var(--card));
+    color: var(--text);
+    font: inherit;
+}
+
+.gt-add-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.4rem;
+}

@@ -49,8 +49,10 @@ The machines come from three places, and two entries for one machine are one row
 
 A machine that will not answer is a row that says so, rather than a list that fails.
 
-The last row, **New session**, starts a session on this machine with a shell in it, where Rex's own picker keeps its
-**New Session**.
+The last two rows are Rex's own: **New session** starts a session on this machine with a shell in it, and **Add
+machine…** names a machine that is in no list yet. A machine is written to this machine's Rex server, which is where Rex
+keeps its own list, so Rex.app shows it too; with no server here there is nothing to write it to, and the settings are
+the way in.
 
 The panel is the other way in: `Control+Backquote` opens **this conversation's own terminal**, which is a session of the
 person's on this machine, named after the conversation and started in its folder the first time that it is asked for. A

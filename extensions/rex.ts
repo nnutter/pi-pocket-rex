@@ -856,6 +856,32 @@ export default function createRex(_host: Host | null, web: Web) {
         };
     });
 
+    // A machine that the person names, kept where Rex keeps its own list: on this machine's server, so that Rex.app
+    // shows it too. Without a server here there is nothing to write it to, and the setting is the way in.
+    web.route("POST", "machines", async (request) => {
+        const label = String(request.body.label ?? "").trim();
+        const endpoint = String(request.body.endpoint ?? "").trim();
+
+        if (label === "" || endpoint === "") throw web.error(400, "A machine needs a name and an address.");
+
+        const local = localHost();
+
+        if (local === null) {
+            throw web.error(
+                503,
+                "This machine has no Rex server to keep the list of machines. Add it in Menu → Extensions → Rex.",
+            );
+        }
+
+        const client = await online(local);
+
+        await client.call("hosts.put", {
+            host: { label, endpoints: [endpoint], icon: "globe", added_from: "Pi Pocket" },
+        });
+
+        return { ok: true, label, endpoint };
+    });
+
     // A new session on a machine, with a shell in it: the row that Rex's own picker has at the bottom.
     web.route("POST", "sessions", async (request) => {
         const named = String(request.body.host ?? "");

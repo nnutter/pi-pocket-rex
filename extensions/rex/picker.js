@@ -92,6 +92,10 @@ export function PickerPage({ pocket, onOpen }) {
     const [error, setError] = useState(null);
     const [query, setQuery] = useState("");
     const [creating, setCreating] = useState(false);
+    const [adding, setAdding] = useState(false);
+    const [name, setName] = useState("");
+    const [address, setAddress] = useState("");
+    const [saving, setSaving] = useState(false);
     // The page draws itself again after each reading, and a reading that lands after the page went must not do that.
     const showing = useRef(true);
 
@@ -137,6 +141,25 @@ export function PickerPage({ pocket, onOpen }) {
         }
     };
 
+    // The other row that Rex's picker has: a machine that is not in any list yet, written where Rex keeps its own.
+    const add = async () => {
+        setSaving(true);
+
+        try {
+            await pocket.api("machines", { label: name, endpoint: address }, { method: "POST" });
+
+            setAdding(false);
+            setName("");
+            setAddress("");
+            setError(null);
+            await read();
+        } catch (failure) {
+            setError(failure.message);
+        } finally {
+            setSaving(false);
+        }
+    };
+
     const hosted = filtered(listing ?? [], query);
     const machines = hosted.length;
     const sessions = hosted.reduce((total, host) => total + host.sessions.length, 0);
@@ -177,13 +200,48 @@ export function PickerPage({ pocket, onOpen }) {
             ${hosted.map((host) => html`<${Machine} key=${host.key} pocket=${pocket} host=${host} onOpen=${onOpen} />`)}
         </ul>
         <div class="gt-picker-foot">
-            <button class="gt-session gt-new" disabled=${creating} onClick=${create}>
-                <${pocket.Icon}
-                    path="M8 4a.75.75 0 0 1 .75.75v2.5h2.5a.75.75 0 0 1 0 1.5h-2.5v2.5a.75.75 0 0 1-1.5 0v-2.5h-2.5a.75.75 0 0 1 0-1.5h2.5v-2.5A.75.75 0 0 1 8 4Z"
-                    size=${16}
-                />
-                <span class="gt-session-name">${creating ? "Starting…" : "New session"}</span>
-            </button>
+            ${adding
+                ? html`<div class="gt-add">
+                      <input
+                          class="gt-filter-box gt-add-name"
+                          type="text"
+                          placeholder="Name"
+                          aria-label="Name"
+                          value=${name}
+                          onInput=${(event) => setName(event.currentTarget.value)}
+                      />
+                      <input
+                          class="gt-filter-box gt-add-host"
+                          type="text"
+                          placeholder="host or URL"
+                          aria-label="Host or URL"
+                          value=${address}
+                          onInput=${(event) => setAddress(event.currentTarget.value)}
+                      />
+                      <div class="gt-add-actions">
+                          <button class="button small muted" disabled=${saving} onClick=${() => setAdding(false)}>
+                              Cancel
+                          </button>
+                          <button
+                              class="button small"
+                              disabled=${saving || name.trim() === "" || address.trim() === ""}
+                              onClick=${add}
+                          >
+                              ${saving ? "Adding…" : "Add"}
+                          </button>
+                      </div>
+                  </div>`
+                : html`<button class="gt-session gt-new" disabled=${creating} onClick=${create}>
+                          <${pocket.Icon}
+                              path="M8 4a.75.75 0 0 1 .75.75v2.5h2.5a.75.75 0 0 1 0 1.5h-2.5v2.5a.75.75 0 0 1-1.5 0v-2.5h-2.5a.75.75 0 0 1 0-1.5h2.5v-2.5A.75.75 0 0 1 8 4Z"
+                              size=${16}
+                          />
+                          <span class="gt-session-name">${creating ? "Starting…" : "New session"}</span>
+                      </button>
+                      <button class="gt-session gt-new" onClick=${() => setAdding(true)}>
+                          <${pocket.Icon} path=${iconPathOf("globe")} size=${16} />
+                          <span class="gt-session-name">Add machine…</span>
+                      </button>`}
         </div>
     </div>`;
 }

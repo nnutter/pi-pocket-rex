@@ -1480,6 +1480,34 @@ describe("the picker", () => {
         }
     }, 40_000);
 
+    test("names a machine in two fields, and the list of machines then has it", async () => {
+        const page = await openPhone();
+
+        try {
+            await page.goto(`${URL_BASE}/?page=sessions`, { waitUntil: "networkidle2" });
+            await page.waitForSelector(".gt-new");
+
+            const before = await page.$$eval(".gt-machine", (rows) => rows.length);
+
+            await tap(page, ".gt-picker-foot .gt-new:last-of-type");
+            await page.waitForSelector(".gt-add-name");
+
+            // One machine for each run: the preview's Rex server keeps the list, and Rex refuses a name it has.
+            await page.type(".gt-add-name", `build-${Date.now() % 100_000}`);
+            await page.type(".gt-add-host", "build.example.ts.net");
+            // The two buttons of the card, in the order that they are drawn: Cancel, then Add.
+            await page.click(".gt-add-actions .button:last-child");
+
+            await page.waitForFunction(
+                (was) => document.querySelectorAll(".gt-machine").length > was,
+                { timeout: 20_000 },
+                before,
+            );
+        } finally {
+            await page.close();
+        }
+    }, 40_000);
+
     test("starts a session from the last row, and the list then has two", async () => {
         const page = await openPhone();
 
