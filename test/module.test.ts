@@ -5,6 +5,7 @@
  * The runner is the real one, with `libghostty-vt` in this repository, so a frame here is the frame a page draws.
  */
 import { afterEach, expect, test } from "bun:test";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import createRex, { rexKeyName, rexKeyOf } from "../extensions/rex.ts";
 import { fakeRex, type FakeRex } from "./fake-rex.ts";
@@ -280,4 +281,69 @@ test("sends a key with the modifiers in the order that Rex reads them", () => {
 
     expect(rexKeyOf({ key: "Enter" })).toMatchObject({ key: "enter", mods: "", unshifted_codepoint: 0 });
     expect(rexKeyOf({ key: "KeyA", utf8: "a" })).toMatchObject({ text: "a" });
+});
+
+test("makes the conversation's own session when the page names none", async () => {
+    const server = serve();
+    const fake = module(server);
+
+    server.requests.length = 0;
+
+    const answer = await fake.call<{ terminal: Summary }>({
+        method: "POST",
+        path: "terminals",
+        body: { conversation: 7, cols: 40, rows: 6 },
+    });
+
+    const created = server.requests.find((each) => each.method === "session.create");
+
+    expect(created).toBeDefined();
+    // The session carries the conversation's name and folder, and its shell starts in that folder.
+    expect(created!.payload).toMatchObject({ label: "Here" });
+    expect(answer.terminal).toMatchObject({ host: server.url, session: server.made[0]!.session_id, block: "block:made" });
+});
+
+test("comes back to the session that already has the conversation's name", async () => {
+    const server = serve({ sessions: [{ session_id: "session:1", label: "Here" }] });
+    const fake = module(server);
+
+    server.requests.length = 0;
+
+    const answer = await fake.call<{ terminal: Summary }>({
+        method: "POST",
+        path: "terminals",
+        body: { conversation: 7, cols: 40, rows: 6 },
+    });
+
+    expect(server.requests.map((each) => each.method)).not.toContain("session.create");
+    expect(answer.terminal.session).toBe("session:1");
+});
+
+test("starts a session for the picker's own row, and says where it is", async () => {
+    const server = serve();
+    const fake = module(server);
+
+    const answer = await fake.call<{ host: string; session: string; label: string }>({
+        method: "POST",
+        path: "sessions",
+        body: {},
+    });
+
+    expect(answer).toMatchObject({ host: server.url, session: "session:made-1", label: "made" });
+
+    const created = server.requests.find((each) => each.method === "session.create");
+
+    expect(created!.payload).toMatchObject({
+        initial_windows: [
+            {
+                layout: {
+                    block: {
+                        flavor: "com.superlogical.terminal.shell",
+                        // A session that a person starts by hand begins in their home, as Rex's own picker does.
+                        options: { cwd: homedir() },
+                    },
+                },
+            },
+        ],
+    });
 });

@@ -1431,3 +1431,71 @@ describe("the screen", () => {
         return shape;
     }
 });
+
+describe("the picker", () => {
+    test("shows a machine with the sessions under it, and the row that starts one", async () => {
+        const page = await openPhone();
+
+        try {
+            await page.goto(`${URL_BASE}/?page=sessions`, { waitUntil: "networkidle2" });
+            await page.waitForSelector(".gt-machine");
+
+            const machine = await page.$eval(".gt-machine-name", (one) => one.textContent ?? "");
+            const sessions = await page.$$eval(".gt-session:not(.gt-new) .gt-session-name", (rows) =>
+                rows.map((row) => row.textContent ?? ""),
+            );
+
+            // The preview runs a Rex server of its own, with one session in it, and it is this machine's.
+            expect(machine).not.toBe("");
+            expect(sessions).toContain("Preview");
+            expect(await page.$(".gt-new")).not.toBeNull();
+        } finally {
+            await page.close();
+        }
+    }, 30_000);
+
+    test("opens the terminal of the session that a person taps", async () => {
+        const page = await openPhone();
+
+        try {
+            await page.goto(`${URL_BASE}/?page=sessions`, { waitUntil: "networkidle2" });
+            await page.waitForSelector(".gt-session");
+
+            await tap(page, ".gt-session");
+
+            // The terminal page shows the session's own screen: a prompt, drawn by the engine.
+            await page.waitForSelector(".gt-screen", { timeout: 20_000 });
+            await page.waitForFunction(
+                () => (document.querySelector(".gt-screen")?.textContent ?? "").trim().length > 0,
+                { timeout: 20_000 },
+            );
+
+            expect(await page.$(".gt-panes")).not.toBeNull();
+        } finally {
+            await page.close();
+        }
+    }, 40_000);
+
+    test("starts a session from the last row, and the list then has two", async () => {
+        const page = await openPhone();
+
+        try {
+            await page.goto(`${URL_BASE}/?page=sessions`, { waitUntil: "networkidle2" });
+            await page.waitForSelector(".gt-new");
+
+            const before = await page.$$eval(".gt-session:not(.gt-new)", (rows) => rows.length);
+
+            await tap(page, ".gt-new");
+            await page.waitForSelector(".gt-screen", { timeout: 20_000 });
+
+            await page.goto(`${URL_BASE}/?page=sessions`, { waitUntil: "networkidle2" });
+            await page.waitForFunction(
+                (was) => document.querySelectorAll(".gt-session:not(.gt-new)").length > was,
+                { timeout: 20_000 },
+                before,
+            );
+        } finally {
+            await page.close();
+        }
+    }, 40_000);
+});

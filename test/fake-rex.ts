@@ -18,6 +18,8 @@ export interface FakeHost {
 
 export interface FakeRex {
     url: string;
+    /** The sessions that this server has made, which `session.list` then reports. */
+    made: FakeSession[];
     hellos: Array<Record<string, unknown>>;
     requests: Array<{ method: string; payload: unknown }>;
     sockets: Set<unknown>;
@@ -52,6 +54,7 @@ export function fakeRex(options: FakeRexOptions = {}): FakeRex {
     const dataSockets = new Set<unknown>();
     const dataMessages: Uint8Array[] = [];
     const welcome = options.welcome ?? true;
+    const made: FakeSession[] = [];
 
     const server = Bun.serve({
         port: 0,
@@ -170,10 +173,26 @@ export function fakeRex(options: FakeRexOptions = {}): FakeRex {
     function resolve(method: string, payload: unknown): unknown {
         if (options.answer !== undefined) return options.answer(method, payload);
 
-        if (method === "session.list") return { sessions: options.sessions ?? [] };
+        if (method === "session.list") return { sessions: [...(options.sessions ?? []), ...made] };
+        if (method === "session.create") {
+            const asked = payload as { label?: string };
+            const created: FakeSession = { session_id: `session:made-${made.length + 1}`, label: asked.label ?? "made" };
+
+            made.push(created);
+
+            return { session_id: created.session_id };
+        }
         if (method === "hosts.list") return { hosts: options.hosts ?? [] };
         if (method === "data.connect") return { ticket: Buffer.alloc(16, 9).toString("base64url"), expires_in_ms: 60_000 };
-        if (method === "session.list_blocks") return { blocks: options.blocks ?? [] };
+        if (method === "session.list_blocks") {
+            const asked = payload as { session_id?: string };
+
+            if (made.some((each) => each.session_id === asked.session_id)) {
+                return { blocks: [{ block_id: "block:made", creator_name: "com.superlogical.terminal" }] };
+            }
+
+            return { blocks: options.blocks ?? [] };
+        }
         if (method === "session.new_window") return { window_id: "window:made", block_ids: ["block:made"], revision: 1 };
         if (method === "com.superlogical.terminal.format") return { content: options.screen ?? "" };
         if (method === "com.superlogical.terminal.write") return { bytes_written: String((payload as { args?: { data?: string } }).args?.data ?? "").length };
@@ -183,6 +202,7 @@ export function fakeRex(options: FakeRexOptions = {}): FakeRex {
 
     return {
         url: `ws://127.0.0.1:${server.port}`,
+        made,
         hellos,
         requests,
         sockets,

@@ -91,6 +91,7 @@ export function PickerPage({ pocket, onOpen }) {
     const [listing, setListing] = useState(null);
     const [error, setError] = useState(null);
     const [query, setQuery] = useState("");
+    const [creating, setCreating] = useState(false);
     // The page draws itself again after each reading, and a reading that lands after the page went must not do that.
     const showing = useRef(true);
 
@@ -118,6 +119,23 @@ export function PickerPage({ pocket, onOpen }) {
             clearInterval(timer);
         };
     }, []);
+
+    // Rex's own picker ends with a row that starts a session, and this one starts it on the machine that Pi Pocket
+    // runs on: the one a person is already using.
+    const create = async () => {
+        setCreating(true);
+
+        try {
+            const made = await pocket.api("sessions", {}, { method: "POST" });
+
+            setError(null);
+            onOpen({ key: made.host }, { id: made.session, label: made.label });
+        } catch (failure) {
+            setError(failure.message);
+        } finally {
+            setCreating(false);
+        }
+    };
 
     const hosted = filtered(listing ?? [], query);
     const machines = hosted.length;
@@ -158,5 +176,14 @@ export function PickerPage({ pocket, onOpen }) {
         <ul class="gt-list-rows">
             ${hosted.map((host) => html`<${Machine} key=${host.key} pocket=${pocket} host=${host} onOpen=${onOpen} />`)}
         </ul>
+        <div class="gt-picker-foot">
+            <button class="gt-session gt-new" disabled=${creating} onClick=${create}>
+                <${pocket.Icon}
+                    path="M8 4a.75.75 0 0 1 .75.75v2.5h2.5a.75.75 0 0 1 0 1.5h-2.5v2.5a.75.75 0 0 1-1.5 0v-2.5h-2.5a.75.75 0 0 1 0-1.5h2.5v-2.5A.75.75 0 0 1 8 4Z"
+                    size=${16}
+                />
+                <span class="gt-session-name">${creating ? "Starting…" : "New session"}</span>
+            </button>
+        </div>
     </div>`;
 }

@@ -49,6 +49,14 @@ The machines come from three places, and two entries for one machine are one row
 
 A machine that will not answer is a row that says so, rather than a list that fails.
 
+The last row, **New session**, starts a session on this machine with a shell in it, where Rex's own picker keeps its
+**New Session**.
+
+The panel is the other way in: `Control+Backquote` opens **this conversation's own terminal**, which is a session of the
+person's on this machine, named after the conversation and started in its folder the first time that it is asked for. A
+person who comes back to it — after a reload, or from another tab — finds the same one, because it is found by name
+rather than remembered by a number.
+
 ## How it is put together
 
 - `extensions/rex.ts` — the drop-in module. One Rex connection for each machine, one terminal for each block that a
@@ -112,8 +120,6 @@ A person's own Nerd font is one line away — put its name above `"Pocket Mono"`
 
 - **No mouse, no images.** Keys and text go in; the screen comes out. Kitty graphics and mouse tracking are not wired, so
   clicking a file name in a full-screen program does nothing.
-- **A session of its own, not yet.** A terminal is a Rex session that already exists. A session with no terminal gets one
-  in the folder of the conversation that asked for it, but a Pi Pocket session does not create a Rex session of its own.
 - **A terminal outlives Pi Pocket.** The shell is Rex's, so closing the panel, or restarting the server, leaves it
   running. Ending the terminal in Pi Pocket gives the block back; it does not end the program.
 - **The terminals are the owner's.** A drop-in runs with its owner's rights, and so does anything typed in this page. The

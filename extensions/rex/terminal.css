@@ -654,3 +654,21 @@
 .gt-session-line {
     padding: 0.25rem 0 0.25rem 1.65rem;
 }
+
+/* The row that starts a session, at the foot of the list: apart from the sessions above it, as Rex's picker has it. */
+.gt-picker-foot {
+    flex: none;
+    margin-top: 0.25rem;
+    padding-top: 0.6rem;
+    border-top: 1px solid var(--line);
+}
+
+.gt-new {
+    gap: 0.5rem;
+    font-weight: 600;
+}
+
+.gt-new:disabled {
+    opacity: 0.6;
+    cursor: default;
+}

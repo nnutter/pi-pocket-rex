@@ -329,6 +329,67 @@ export default function createRex(_host: Host | null, web: Web) {
         return found;
     }
 
+    /** The machine that a conversation's own terminal runs on: this one, because that is where Pi Pocket runs. */
+    async function ownHost(): Promise<RexHost> {
+        const local = localHost();
+
+        if (local === null) {
+            throw web.error(
+                503,
+                "This machine has no Rex server, so there is no terminal of its own. Install Rex here, or choose a session in Rex sessions.",
+            );
+        }
+
+        return local;
+    }
+
+    /**
+     * The session that belongs to one conversation: the one that is named after it, or a new one in the conversation's
+     * folder.
+     *
+     * A session is found by its label rather than remembered, so that a person who restarts Pi Pocket, or opens the
+     * terminal from another tab, comes back to the terminal that they left instead of a second one. The label is the
+     * conversation's title, which is the name that the session has in Rex too.
+     */
+    async function ownSession(
+        host: RexHost,
+        conversation: number,
+        sessions: readonly WebSession[],
+        cols: number,
+        rows: number,
+    ): Promise<string> {
+        const client = await online(host);
+        const label = (sessions.find((each) => each.id === conversation)?.title ?? "").trim();
+
+        if (label !== "") {
+            const found = (await client.sessions()).find((each) => (each.label ?? "").trim() === label);
+
+            if (found !== undefined) return found.session_id;
+        }
+
+        const cwd = sessions.find((each) => each.id === conversation)?.cwd ?? homedir();
+        const made = await client.call<{ session_id?: string }>("session.create", {
+            ...(label === "" ? {} : { label }),
+            initial_windows: [
+                {
+                    layout: {
+                        block: {
+                            flavor: `${TERMINAL_CREATOR}.shell`,
+                            options: { cwd },
+                            size: { columns: cols, rows },
+                        },
+                    },
+                },
+            ],
+        });
+
+        if (typeof made.session_id !== "string" || made.session_id === "") {
+            throw web.error(502, "Rex made no session for this conversation.");
+        }
+
+        return made.session_id;
+    }
+
     /** One host, and the sessions that it holds, or why it could not be asked. */
     async function describe(host: RexHost) {
         const base = { key: host.key, label: host.label, icon: host.icon, endpoint: host.endpoint, local: host.local };
@@ -788,36 +849,42 @@ export default function createRex(_host: Host | null, web: Web) {
         };
     });
 
-    web.route("POST", "terminals", async (request) => {
-        closeArchived(request.sessions());
+    // A new session on a machine, with a shell in it: the row that Rex's own picker has at the bottom.
+    web.route("POST", "sessions", async (request) => {
+        const named = String(request.body.host ?? "");
+        const host = named === "" ? await ownHost() : await hostOf(named);
+        const label = String(request.body.label ?? "").trim();
+        const cwd = String(request.body.cwd ?? "") || homedir();
 
-        let host = String(request.body.host ?? "") === "" ? null : await hostOf(String(request.body.host));
-        let sessionId = String(request.body.session ?? "");
+        const client = await online(host);
+        const made = await client.call<{ session_id?: string }>("session.create", {
+            ...(label === "" ? {} : { label }),
+            initial_windows: [{ layout: { block: { flavor: `${TERMINAL_CREATOR}.shell`, options: { cwd } } } }],
+        });
 
-        // A page that has not chosen a session shows the first one that any machine offers, so that the terminal opens
-        // on something rather than on a form that a person has to fill in first.
-        if (host === null || sessionId === "") {
-            for (const each of await hostList()) {
-                try {
-                    const client = await online(each);
-                    const first = (await client.sessions())[0];
-
-                    if (first === undefined) continue;
-
-                    host = each;
-                    sessionId = first.session_id;
-                    break;
-                } catch {
-                    // A machine that will not answer is not one to open a terminal on.
-                }
-            }
+        if (typeof made.session_id !== "string" || made.session_id === "") {
+            throw web.error(502, "Rex made no session.");
         }
 
-        if (host === null || sessionId === "") throw web.error(404, "No Rex session to open. Choose one in Rex sessions.");
+        const made_ = (await client.sessions()).find((each) => each.session_id === made.session_id);
+
+        return { host: host.key, session: made.session_id, label: made_?.label ?? made.session_id };
+    });
+
+    web.route("POST", "terminals", async (request) => {
+        closeArchived(request.sessions());
 
         const cols = size(request.body.cols, 20, 400, 80);
         const rows = size(request.body.rows, 5, 200, 24);
         const conversation = Number(request.body.conversation) || 0;
+
+        // A page that names a session shows that one. A page that names none is this conversation's own terminal, which
+        // is a session of the person's on this machine, made for the conversation the first time that it is asked for.
+        const named = String(request.body.host ?? "") !== "" && String(request.body.session ?? "") !== "";
+        const host = named ? await hostOf(String(request.body.host)) : await ownHost();
+        const sessionId = named
+            ? String(request.body.session)
+            : await ownSession(host, conversation, request.sessions(), cols, rows);
 
         // One terminal for each block: a page that reloads finds the one that it left rather than a second stream.
         const existing = [...terminals.values()].find(

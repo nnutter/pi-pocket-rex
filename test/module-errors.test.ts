@@ -69,15 +69,14 @@ test("refuses a machine that the list does not have", async () => {
     ).rejects.toMatchObject({ status: 404 });
 });
 
-test("opens the first session that a machine offers when the page has not chosen one", async () => {
-    const server = serve();
-    const fake = module(server);
+test("refuses a machine that the list does not have", async () => {
+    const fake = module(serve());
 
-    const answer = await fake.call<{ terminal: { session: string } }>({
-        method: "POST",
-        path: "terminals",
-        body: { cols: 40, rows: 6 },
-    });
-
-    expect(answer.terminal.session).toBe("session:1");
+    await expect(
+        fake.call({
+            method: "POST",
+            path: "terminals",
+            body: { host: "ws://127.0.0.1:1", session: "session:1", conversation: 7, cols: 40, rows: 6 },
+        }),
+    ).rejects.toMatchObject({ status: 404 });
 });
