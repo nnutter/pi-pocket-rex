@@ -59,6 +59,19 @@ person's on this machine, named after the conversation and started in its folder
 person who comes back to it — after a reload, or from another tab — finds the same one, because it is found by name
 rather than remembered by a number.
 
+## Choosing another session
+
+There are two ways to the picker, and either one is two taps:
+
+- the **globe** in the terminal's bar, which puts the terminal away and shows the list;
+- **Rex sessions** on the rail, or in the launcher.
+
+The session that the terminal shows has a **tick** beside it. Tap another one and the terminal opens on that session,
+from then on: `Control+Backquote` returns to it, and the bar says which machine and session it is. Tap **This
+conversation's own terminal**, at the top of the list, to come back to the one that belongs to the conversation.
+
+A session that was open before keeps running in Rex when another one is chosen: the terminal only stops watching it.
+
 ## How it is put together
 
 - `extensions/rex.ts` — the drop-in module. One Rex connection for each machine, one terminal for each block that a

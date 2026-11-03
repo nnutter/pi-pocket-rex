@@ -716,3 +716,25 @@
     justify-content: flex-end;
     gap: 0.4rem;
 }
+
+/* The tick beside a session that the terminal already shows, and the row for the conversation's own terminal. */
+.gt-session-tick {
+    display: inline-flex;
+    flex: none;
+    width: 1rem;
+    justify-content: center;
+    color: var(--accent);
+}
+
+.gt-session.is-picked {
+    background: color-mix(in srgb, var(--accent) 16%, var(--card));
+    border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+    font-weight: 600;
+}
+
+.gt-own {
+    padding-left: 0;
+    margin-bottom: 0.25rem;
+}
+
+/* Choosing another session stays in the bar at every width: the text size is a preference, and this is not. */

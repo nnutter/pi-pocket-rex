@@ -155,7 +155,7 @@ function useSoftKeyboard(pocket) {
     return [up, away];
 }
 
-function TerminalPage({ pocket, close, setOpen, surface, onSwitch, target }) {
+function TerminalPage({ pocket, close, setOpen, surface, onSwitch, target, onChoose }) {
     const { html, useEffect, useRef, useState } = pocket;
 
     const [state, setState] = useState({});
@@ -328,6 +328,7 @@ function TerminalPage({ pocket, close, setOpen, surface, onSwitch, target }) {
                           "gt-surface",
                       )
                     : null}
+                ${button(icon(GLOBE), "Another session", onChoose, "gt-sessions")}
                 ${button(icon(MINUS, GLASS_UNDER), "Smaller text", () => view()?.setFont(-1), "gt-font")}
                 ${button(icon(OVER_PLUS, GLASS_OVER), "Larger text", () => view()?.setFont(1), "gt-font")}
                 <span class="gt-space"></span>
@@ -462,6 +463,17 @@ export default function setup(pocket) {
         else pocket.openPage("terminal");
     };
 
+    /** Back to the terminal that belongs to this conversation, after a session of someone else's was chosen. */
+    const openOwn = () => {
+        globalThis.localStorage?.removeItem(CHOSEN);
+
+        if (canPanel && pocket.conversationId() !== null) pocket.openPanel("terminal");
+        else pocket.openPage("terminal");
+    };
+
+    /** The picker, from the terminal's own bar: choosing another session should not mean leaving the terminal first. */
+    const chooseSession = () => pocket.openPage("sessions");
+
     /** The terminal, on the surface that it is given: `pocket.page` and `pocket.panel` both take the fields that it has. */
     const Terminal = ({ close, surface }) =>
         html`<${TerminalPage}
@@ -471,6 +483,7 @@ export default function setup(pocket) {
             surface=${surface}
             onSwitch=${switchSurface}
             target=${targetOf}
+            onChoose=${chooseSession}
         />`;
     const AsPanel = ({ close }) => html`<${Terminal} close=${close} surface="panel" />`;
     const AsPage = ({ close }) => html`<${Terminal} close=${close} surface="page" />`;
@@ -506,7 +519,7 @@ export default function setup(pocket) {
     // Every machine that Rex can reach, with the sessions under each: the same form as Rex's own picker, so that a
     // person finds their work on their phone the way that they find it on their laptop. A session opens its terminal.
     function Sessions() {
-        return html`<${PickerPage} pocket=${pocket} onOpen=${open} />`;
+        return html`<${PickerPage} pocket=${pocket} onOpen=${open} onOpenOwn=${openOwn} />`;
     }
 
     pocket.page({ id: "sessions", title: "Rex sessions", component: Sessions });

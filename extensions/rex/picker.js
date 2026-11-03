@@ -2,6 +2,17 @@
 // picker uses. A machine is a heading with its own icon; a session is the row under it. The filter keeps the rows that
 // match, and a machine that will not answer says so where its sessions would be.
 
+/** Where the terminal keeps the session that it shows, which is what a tick in this list marks. */
+const CHOSEN = "x.rex.target";
+
+function chosen() {
+    try {
+        return JSON.parse(globalThis.localStorage?.getItem(CHOSEN) ?? "null");
+    } catch {
+        return null;
+    }
+}
+
 /** The icons that Rex names for a host, drawn as 16 by 16 paths. Anything else gets the monitor. */
 const ICONS = {
     desktopcomputer:
@@ -14,6 +25,9 @@ const ICONS = {
         "M1.75 1h12.5c.966 0 1.75.784 1.75 1.75v2.5A1.75 1.75 0 0 1 14.25 7H1.75A1.75 1.75 0 0 1 0 5.25v-2.5C0 1.784.784 1 1.75 1Zm0 1.5a.25.25 0 0 0-.25.25v2.5c0 .138.112.25.25.25h12.5a.25.25 0 0 0 .25-.25v-2.5a.25.25 0 0 0-.25-.25ZM1.75 9h12.5c.966 0 1.75.784 1.75 1.75v2.5A1.75 1.75 0 0 1 14.25 15H1.75A1.75 1.75 0 0 1 0 13.25v-2.5C0 9.784.784 9 1.75 9Zm0 1.5a.25.25 0 0 0-.25.25v2.5c0 .138.112.25.25.25h12.5a.25.25 0 0 0 .25-.25v-2.5a.25.25 0 0 0-.25-.25ZM3 12.25a.75.75 0 0 1 .75-.75h.5a.75.75 0 0 1 0 1.5h-.5a.75.75 0 0 1-.75-.75Z",
     globe: "M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0Zm5.9 5h-2.2a12 12 0 0 0-.9-3.4A6.5 6.5 0 0 1 13.9 5ZM8 1.6c.7.9 1.4 2.4 1.8 3.4H6.2c.4-1 1.1-2.5 1.8-3.4ZM2.1 5h3.1c.2-1.2.5-2.4.9-3.4A6.5 6.5 0 0 0 2.1 5Zm0 1.5a6.5 6.5 0 0 0 3.4 4.9c-.4-1-.7-2.2-.9-3.4H2.1Zm5.9 6.9c-.7-.9-1.4-2.4-1.8-3.4h3.6c-.4 1-1.1 2.5-1.8 3.4Zm2.8-4.9c-.2 1.2-.5 2.4-.9 3.4a6.5 6.5 0 0 0 3.4-4.9h-2.5Z",
 };
+
+/** The tick of the session that the terminal shows, as a 16 by 16 path. */
+const TICK = "M13.78 4.22a.75.75 0 0 1 0 1.06l-6.5 6.5a.75.75 0 0 1-1.06 0L3.22 8.78a.75.75 0 1 1 1.06-1.06l2.47 2.47 5.97-5.97a.75.75 0 0 1 1.06 0Z";
 
 /** The path for a host's icon: Rex's own name for it, or the monitor when this page does not know the name. */
 export function iconPathOf(name) {
@@ -51,7 +65,7 @@ function stateOf(host) {
     return count === 1 ? "1 session" : `${count} sessions`;
 }
 
-const Machine = ({ pocket, host, onOpen }) => {
+const Machine = ({ pocket, host, onOpen, picked }) => {
     const { html } = pocket;
 
     return html`<li class="gt-machine">
@@ -72,7 +86,13 @@ const Machine = ({ pocket, host, onOpen }) => {
             : html`<ul class="gt-sessions">
                   ${host.sessions.map(
                       (session) => html`<li key=${session.id}>
-                          <button class="gt-session" onClick=${() => onOpen(host, session)}>
+                          <button
+                              class="gt-session ${picked(host, session) ? "is-picked" : ""}"
+                              onClick=${() => onOpen(host, session)}
+                          >
+                              <span class="gt-session-tick" aria-hidden="true">
+                                  ${picked(host, session) ? html`<${pocket.Icon} path=${TICK} size=${14} />` : null}
+                              </span>
                               <span class="gt-session-name">${session.label}</span>
                           </button>
                       </li>`,
@@ -85,7 +105,7 @@ const Machine = ({ pocket, host, onOpen }) => {
  * The page: every machine that the module can reach, and the sessions under each. It reads again every few seconds,
  * because a session that a person opens on their laptop should show on their phone without a reload.
  */
-export function PickerPage({ pocket, onOpen }) {
+export function PickerPage({ pocket, onOpen, onOpenOwn }) {
     const { html, useEffect, useRef, useState } = pocket;
 
     const [listing, setListing] = useState(null);
@@ -160,6 +180,12 @@ export function PickerPage({ pocket, onOpen }) {
         }
     };
 
+    // The session that the terminal shows now, and whether it is this conversation's own rather than one that was
+    // chosen: a tick says which row a person already has open.
+    const now = chosen();
+    const mine = typeof pocket.conversationId === "function" ? pocket.conversationId() : null;
+    const picked = (host, session) => now !== null && now.host === host.key && now.session === session.id;
+
     const hosted = filtered(listing ?? [], query);
     const machines = hosted.length;
     const sessions = hosted.reduce((total, host) => total + host.sessions.length, 0);
@@ -188,6 +214,18 @@ export function PickerPage({ pocket, onOpen }) {
         </div>
         ${error ? html`<div class="error-box">${error}</div>` : null}
         ${listing === null && error === null ? html`<${pocket.Loader} />` : null}
+        ${mine !== null
+            ? html`<ul class="gt-list-rows gt-own">
+                  <li>
+                      <button class="gt-session ${now === null ? "is-picked" : ""}" onClick=${() => onOpenOwn()}>
+                          <span class="gt-session-tick" aria-hidden="true">
+                              ${now === null ? html`<${pocket.Icon} path=${TICK} size=${14} />` : null}
+                          </span>
+                          <span class="gt-session-name">This conversation's own terminal</span>
+                      </button>
+                  </li>
+              </ul>`
+            : null}
         ${listing !== null && listing.length === 0
             ? html`<p class="muted small">
                   No Rex server answered. Install Rex on this machine, or name a machine in Menu → Extensions → Rex.
@@ -197,7 +235,9 @@ export function PickerPage({ pocket, onOpen }) {
             ? html`<p class="muted small">No machine or session has that name.</p>`
             : null}
         <ul class="gt-list-rows">
-            ${hosted.map((host) => html`<${Machine} key=${host.key} pocket=${pocket} host=${host} onOpen=${onOpen} />`)}
+            ${hosted.map(
+                (host) => html`<${Machine} key=${host.key} pocket=${pocket} host=${host} onOpen=${onOpen} picked=${picked} />`,
+            )}
         </ul>
         <div class="gt-picker-foot">
             ${adding

@@ -1480,6 +1480,53 @@ describe("the picker", () => {
         }
     }, 40_000);
 
+    test("ticks the session that the terminal shows, and goes back to this conversation's own", async () => {
+        const page = await openPhone();
+
+        try {
+            await page.goto(`${URL_BASE}/?page=sessions`, { waitUntil: "networkidle2" });
+            await page.waitForSelector(".gt-own .gt-session");
+
+            // Nothing chosen yet: the conversation's own terminal is the one that the tick is on.
+            expect(await page.$eval(".gt-own .gt-session", (row) => row.className)).toContain("is-picked");
+
+            const session = await page.$(".gt-machine .gt-session");
+
+            await session!.click();
+            await page.waitForSelector(".gt-bar", { timeout: 20_000 });
+
+            await page.goto(`${URL_BASE}/?page=sessions`, { waitUntil: "networkidle2" });
+            await page.waitForSelector(".gt-session.is-picked");
+
+            const ticked = await page.$$eval(".gt-session.is-picked .gt-session-name", (rows) => rows.map((row) => row.textContent));
+
+            expect(ticked).toEqual(["Preview"]);
+
+            // And back: the conversation's own terminal is the one that a reload of the terminal opens again.
+            await page.click(".gt-own .gt-session");
+            await page.waitForSelector(".gt-bar", { timeout: 20_000 });
+
+            expect(await page.evaluate(() => localStorage.getItem("x.rex.target"))).toBeNull();
+        } finally {
+            await page.close();
+        }
+    }, 40_000);
+
+    test("opens the picker from the terminal's own bar", async () => {
+        const page = await openPhone();
+
+        try {
+            await page.goto(`${URL_BASE}/?page=terminal`, { waitUntil: "networkidle2" });
+            await page.waitForSelector(".gt-bar .gt-sessions");
+
+            await tap(page, ".gt-bar .gt-sessions");
+
+            await page.waitForSelector(".gt-machine", { timeout: 20_000 });
+        } finally {
+            await page.close();
+        }
+    }, 40_000);
+
     test("names a machine in two fields, and the list of machines then has it", async () => {
         const page = await openPhone();
 
