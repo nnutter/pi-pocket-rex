@@ -125,6 +125,10 @@ A soft keyboard has no Escape and no Control, so the panel puts a row above it: 
 scrolls sideways, and a round button that puts the keyboard away. Tapping a modifier arms it for the next key. The row
 waits for a soft keyboard, so with a Bluetooth keyboard there is none.
 
+iOS covers the window with its keyboard instead of giving it room, so a screen as tall as the window would keep the line
+being typed behind the keyboard. While the row is up, the page is as tall as the part of the window that the keyboard
+leaves, and the shell gets the rows that fit there.
+
 A shell that a person leaves says nothing: its panel just goes. A shell that a signal stopped, or a program that ended
 with a code, keeps the panel with what happened and a **New shell** button.
 

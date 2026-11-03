@@ -123,6 +123,48 @@ async function keyboardDown(page: Page): Promise<void> {
     await settle(page, 400);
 }
 
+/**
+ * A phone whose keyboard covers the window instead of giving it room, which is how iOS does it: the page is still laid
+ * out as tall as the window, and only the visual viewport gets shorter. Chromium changes the window itself for a
+ * keyboard, as Android does, so this phone is given a visual viewport that a test can shorten on its own.
+ */
+async function openIPhone(): Promise<Page> {
+    const page = await browser.newPage();
+
+    await page.evaluateOnNewDocument(() => {
+        const view = new EventTarget() as EventTarget & Record<string, unknown>;
+
+        view.height = window.innerHeight;
+        view.width = window.innerWidth;
+        view.offsetTop = 0;
+        view.offsetLeft = 0;
+        view.pageTop = 0;
+        view.pageLeft = 0;
+        view.scale = 1;
+
+        Object.defineProperty(window, "visualViewport", { value: view, configurable: true });
+    });
+
+    await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
+    await page.goto(`${URL_BASE}/`, { waitUntil: "networkidle2" });
+    await page.waitForSelector(".gt-panes .gt-row");
+    await settle(page, 400);
+
+    return page;
+}
+
+/** The keyboard of that phone: it covers the window down to this height, and says so as the visual viewport does. */
+async function keyboardCovers(page: Page, height: number): Promise<void> {
+    await page.evaluate((height) => {
+        const view = window.visualViewport as unknown as EventTarget & { height: number };
+
+        view.height = height;
+        view.dispatchEvent(new Event("resize"));
+        window.dispatchEvent(new Event("resize"));
+    }, height);
+    await settle(page, 600);
+}
+
 /** A finger on an element: a touch, as a phone sends one. */
 async function tap(page: Page, selector: string): Promise<void> {
     const element = await page.$(selector);
@@ -240,6 +282,73 @@ describe("the row above a soft keyboard", () => {
             await keyboardDown(page);
 
             expect(await rowShown(page)).toBe(false);
+        } finally {
+            await page.close();
+        }
+    }, 30_000);
+});
+
+describe("a keyboard that covers the window", () => {
+    /**
+     * iOS gives the keyboard no room: the page is still as tall as the window, and the keyboard covers its lower part.
+     * A screen that is as tall as the window keeps the line being typed behind the keyboard, where it cannot be read.
+     * The page takes the height of the part that is left, so the screen ends above the keyboard, and the pty gets the
+     * rows that the smaller screen holds.
+     */
+    test("the screen ends above the keyboard, with the rows that are left", async () => {
+        const page = await openIPhone();
+
+        try {
+            const before = await page.$$eval(".gt-row", (rows) => rows.length);
+
+            await tap(page, ".gt-screen");
+            await keyboardCovers(page, 420);
+
+            const shown = await page.evaluate(() => {
+                const screen = document.querySelector(".gt-screen") as HTMLElement;
+                const keys = document.querySelector(".gt-keys") as HTMLElement | null;
+                const cursor = document.querySelector(".gt-cursor") as HTMLElement;
+
+                return {
+                    screen: Math.round(screen.getBoundingClientRect().bottom),
+                    keys: keys === null ? -1 : Math.round(keys.getBoundingClientRect().bottom),
+                    cursor: Math.round(cursor.getBoundingClientRect().bottom),
+                    rows: document.querySelectorAll(".gt-row").length,
+                };
+            });
+
+            // The row of keys is up, and the screen is above it: the last line of the screen is above the keyboard.
+            expect(shown.keys).toBeGreaterThan(0);
+            expect(shown.screen).toBeLessThan(shown.keys);
+            expect(shown.keys).toBeLessThanOrEqual(420);
+
+            // The line being typed is one that fits: the cursor is above the keyboard, and the shell has those rows.
+            expect(shown.cursor).toBeLessThanOrEqual(420);
+            expect(shown.rows).toBeLessThan(before);
+        } finally {
+            await page.close();
+        }
+    }, 30_000);
+
+    test("the screen is whole again when the keyboard goes", async () => {
+        const page = await openIPhone();
+
+        try {
+            const before = await page.$$eval(".gt-row", (rows) => rows.length);
+            const bottom = () =>
+                page.evaluate(() =>
+                    Math.round((document.querySelector(".gt-screen") as HTMLElement).getBoundingClientRect().bottom),
+                );
+
+            await tap(page, ".gt-screen");
+            await keyboardCovers(page, 420);
+
+            expect(await bottom()).toBeLessThanOrEqual(420);
+
+            await keyboardCovers(page, 844);
+
+            expect(await bottom()).toBeGreaterThan(420);
+            expect(await page.$$eval(".gt-row", (rows) => rows.length)).toBe(before);
         } finally {
             await page.close();
         }

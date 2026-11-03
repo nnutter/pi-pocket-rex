@@ -5,7 +5,7 @@
 /** The version of `pocket` this module was written for. */
 export const pocketApi = 1;
 
-import { TerminalView, keyboardShown, restingHeight } from "./terminal.js";
+import { TerminalView, keyboardShown, restingHeight, visibleHeight } from "./terminal.js";
 import { NEW_SESSION_ICON, PickerPage, SESSION_ICON } from "./picker.js";
 
 /** A prompt, as a 24×24 stroked path like the app's own icons. */
@@ -157,13 +157,68 @@ function useSoftKeyboard(pocket) {
     return [up, away];
 }
 
+/**
+ * Makes the page as tall as the part of the window that a keyboard leaves.
+ *
+ * A phone's keyboard does not change the window: the page is still drawn as tall as it was, and the lines that the
+ * keyboard covers are the lines that a person is typing on. The visual viewport is the part that is left, so while the
+ * keyboard is up the page is that tall, and the screen's last line sits above the keyboard rather than behind it.
+ *
+ * The room is the box that the app gives the page, less its padding: a panel beside a conversation and a page in its
+ * place are different sizes, and the keyboard covers the same height of each.
+ */
+function useKeyboardRoom(pocket, root, up) {
+    const { useEffect } = pocket;
+
+    useEffect(() => {
+        const page = root.current;
+        const area = page?.parentElement ?? null;
+        const view = window.visualViewport;
+
+        // A window with no visual viewport changes its own height for a keyboard, and the app's box already follows it.
+        if (page === null || area === null || view === undefined || view === null) return;
+
+        const fit = () => {
+            if (!up) {
+                page.style.height = "";
+
+                return;
+            }
+
+            const style = getComputedStyle(area);
+            const room = area.getBoundingClientRect();
+            const top = room.top + parseFloat(style.borderTopWidth) + parseFloat(style.paddingTop);
+            const bottom = top + area.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+            const height = visibleHeight({ top, bottom }, { top: view.offsetTop, height: view.height });
+
+            page.style.height = height > 0 ? `${height}px` : "";
+        };
+
+        fit();
+        window.addEventListener("resize", fit);
+        view.addEventListener("resize", fit);
+        view.addEventListener("scroll", fit);
+
+        return () => {
+            window.removeEventListener("resize", fit);
+            view.removeEventListener("resize", fit);
+            view.removeEventListener("scroll", fit);
+            page.style.height = "";
+        };
+    }, [up]);
+}
+
 function TerminalPage({ pocket, close, setOpen, surface, onSwitch, target, onChoose }) {
     const { html, useEffect, useRef, useState } = pocket;
 
     const [state, setState] = useState({});
     const [dismissed, setDismissed] = useState(null);
     const [keyboard, putRowAway] = useSoftKeyboard(pocket);
+    const root = useRef(null);
     const box = useRef(null);
+
+    useKeyboardRoom(pocket, root, keyboard);
+
     const made = useRef(null);
     const keyboardRef = useRef(false);
     // The page's way out, through a ref: a shell that ends asks the page that a person has now to close, and not the one
@@ -307,7 +362,7 @@ function TerminalPage({ pocket, close, setOpen, surface, onSwitch, target, onCho
         putRowAway();
     };
 
-    return html`<div class="gt-page">
+    return html`<div class="gt-page" ref=${root}>
         <div class="gt-bar">
             ${state.flash ? html`<span class="gt-flash small muted">${state.flash}</span>` : null}
             <div class="gt-actions">
