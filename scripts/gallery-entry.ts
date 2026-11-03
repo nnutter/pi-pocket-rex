@@ -17,6 +17,7 @@ const root = join(import.meta.dir, "..");
 /** The drop-in's files, as the module file and the folder that its `web.client` names. */
 export const FILES = [
     "rex.ts",
+    "_rex-client.ts",
     "rex/index.js",
     "rex/terminal.js",
     "rex/picker.js",

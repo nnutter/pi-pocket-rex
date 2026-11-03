@@ -45,6 +45,10 @@ for (const file of browserModule) {
 
 copy(join(root, "extensions", "rex.ts"), join(dropins, "rex.ts"));
 
+// The helper beside the module: the connection to a Rex server, which the module imports and Pi Pocket does not load
+// on its own, because a file that starts with `_` is a helper rather than a module.
+copy(join(root, "extensions", "_rex-client.ts"), join(dropins, "_rex-client.ts"));
+
 for (const file of runtimeFiles) {
     copy(join(root, "src", file), join(runtime, file));
 }
