@@ -992,6 +992,34 @@ describe("typing into the terminal", () => {
     }, 30_000);
 });
 
+describe("the bar's buttons", () => {
+    /** How many of the buttons that a selector names the browser draws. */
+    const drawn = (page: Page, selector: string) =>
+        page.$$eval(selector, (buttons) => buttons.filter((button) => getComputedStyle(button).display !== "none").length);
+
+    /**
+     * A phone's panel has no room for six buttons: the shell's own, the way out, and the end keep theirs, and the text's
+     * size waits until the panel is wide enough for it. The rule that folds them away named the button alone, and the
+     * bar's own rule for a button is a class stronger, so a phone drew all six and squeezed the session's name to a
+     * hundred pixels.
+     */
+    test("folds the text's size away in a narrow panel, and keeps it in a wide one", async () => {
+        const phone = await openPhone();
+        const wide = await openPanel();
+
+        try {
+            expect(await drawn(phone, ".gt-font")).toBe(0);
+            expect(await drawn(phone, ".gt-restart")).toBe(1);
+            expect(await drawn(phone, ".gt-end")).toBe(1);
+
+            expect(await drawn(wide, ".gt-font")).toBe(2);
+        } finally {
+            await phone.close();
+            await wide.close();
+        }
+    }, 30_000);
+});
+
 describe("the surface it shows on", () => {
     test("says which surface a tap gives, and moves the shell there", async () => {
         const page = await openPanel();

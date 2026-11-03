@@ -18,7 +18,7 @@
     "version": "0.1.0",
     "source": {
         "repo": "nnutter/pi-pocket-rex",
-        "commit": "b9e8da5ad1b9c90ddc8614d8dfd91c3aa5320fc8",
+        "commit": "42e34f4867344580434c64cf72effe00754ae725",
         "path": "extensions"
     },
     "files": [
@@ -49,8 +49,8 @@
         },
         {
             "name": "rex/terminal.css",
-            "sha256": "ebcb8187ecdb0a368aeccb7592e127166a0aa2625e6f81d1552497345d53ee49",
-            "size": 18810
+            "sha256": "bc769e5a43e2ac413793bb4a4d2272da686120550bdb5ba4c6264c1f79edab14",
+            "size": 19074
         }
     ],
     "pocketApi": 2,
