@@ -15,6 +15,7 @@
         "htm": "^3.1.1",
         "preact": "^11.1.0",
         "puppeteer-core": "^25.16.0",
-        "typescript": "^7.0.2"
+        "typescript": "^7.0.2",
+        "undici": "^8.12.3"
     }
 }
