@@ -1124,8 +1124,14 @@ describe("how a shell's end is read", () => {
             await page.waitForSelector(".gt-note-said", { timeout: 15_000 });
 
             expect(await page.$eval(".gt-note-said", (note) => note.textContent)).toBe("The shell was stopped.");
-            // The note is over the screen that the shell left, and the panel is still there to read it in.
+
+            // A shell that a person leaves takes its panel with it a moment later. This one stays, and the wait is longer
+            // than that moment: the note is there to read, and a check a moment after it appeared saw a panel that the
+            // timer had not yet taken.
+            await settle(page, 900);
+
             expect(await page.$(".gt-panes")).not.toBeNull();
+            expect(await page.$eval(".gt-note-said", (note) => note.textContent)).toBe("The shell was stopped.");
         } finally {
             await page.close();
         }

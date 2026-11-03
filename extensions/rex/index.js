@@ -5,7 +5,7 @@
 /** The version of `pocket` this module was written for. */
 export const pocketApi = 1;
 
-import { TerminalView, keyboardShown, restingHeight, visibleHeight } from "./terminal.js";
+import { TerminalView, endedQuietly, keyboardShown, restingHeight, visibleHeight } from "./terminal.js";
 import { NEW_SESSION_ICON, PickerPage, SESSION_ICON } from "./picker.js";
 
 /** A prompt, as a 24×24 stroked path like the app's own icons. */
@@ -44,19 +44,6 @@ const KEYS = [
     ["_", "Minus", "_"],
     ["*", "Digit8", "*"],
 ];
-
-/**
- * A shell that a person left -- with `exit`, or with Ctrl-D at its prompt -- says nothing: its panel just goes. A shell
- * that a signal stopped, or a program that ended with a code, is the one worth a word.
- *
- * Rex reports how a terminal's program ended as an exit code, and a signal as the code that the system gives it, so a
- * shell that a person ended deliberately is the one whose code is 0.
- */
-function endedQuietly(state) {
-    if (typeof state.signal === "string" && state.signal !== "") return false;
-
-    return state.exitCode === null || state.exitCode === undefined || state.exitCode === 0;
-}
 
 /** How a shell ended, as one value to compare: the code and the signal, whichever said so. */
 function endedAs(state) {

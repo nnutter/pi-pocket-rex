@@ -129,8 +129,8 @@ iOS covers the window with its keyboard instead of giving it room, so a screen a
 being typed behind the keyboard. While the row is up, the page is as tall as the part of the window that the keyboard
 leaves, and the shell gets the rows that fit there.
 
-A shell that a person leaves says nothing: its panel just goes. A shell that a signal stopped, or a program that ended
-with a code, keeps the panel with what happened and a **New shell** button.
+A shell that a person leaves says nothing: its panel just goes, whatever the status of the last command was. A shell
+that a signal stopped keeps the panel with what happened and a **New shell** button.
 
 ## When the last tab closes
 

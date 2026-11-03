@@ -15,6 +15,19 @@ const INVERSE = 128;
 const INVISIBLE = 256;
 
 /**
+ * Whether a shell ended the way a person ends one, and so whether its panel goes without a word.
+ *
+ * A person leaves a shell with `exit`, or with Ctrl-D at its prompt, and the shell keeps the status of its last command:
+ * a `false` and then Ctrl-D is a code of 1, and the panel that says so is a panel in the way. Rex gives a program that a
+ * signal ended the code -1, because it left no code of its own, and that is the end worth a word.
+ */
+export function endedQuietly(state) {
+    if (typeof state.signal === "string" && state.signal !== "") return false;
+
+    return state.exitCode === null || state.exitCode === undefined || state.exitCode >= 0;
+}
+
+/**
  * How much of a box is in sight: the box, and the part of the window that a keyboard leaves.
  *
  * A phone's keyboard does not change the window -- it covers the lower part of it -- so a box that runs to the bottom of
@@ -802,10 +815,11 @@ export class TerminalView {
 
                 this.#publish({ alive: false, exitCode: code, signal });
 
-                // A shell that a person left takes its window with it, as a terminal's own window does: a `false` and
-                // then Ctrl-D is a status of 1, and a terminal's window is not the place to read about it. A signal is
-                // another thing, and the panel stays with what happened.
-                if (!signal) setTimeout(() => this.#onClose?.(), 250);
+                // A shell that ended the way a person ends one takes its panel with it, as a terminal's window does: a
+                // `false` and then Ctrl-D is a status of 1, and a panel is not the place to read about it. A shell that
+                // a signal stopped keeps the panel with what stopped it, and the panel decides by the same rule that
+                // says whether there is anything to say.
+                if (endedQuietly({ exitCode: code, signal })) setTimeout(() => this.#onClose?.(), 250);
             }),
             this.#pocket.on("notice", ({ id, kind, message }) => {
                 if (id !== this.#id) return;
