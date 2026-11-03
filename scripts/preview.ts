@@ -129,7 +129,8 @@ const routes = [...fake.routes].map((each) => {
 
 async function answer(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    const path = url.pathname.replace(/^\/api\//, "");
+    // The app mounts a module's routes at `/api/x/<module>/`, and the page builds the same address for its beacons.
+    const path = url.pathname.replace(/^\/api\/x\/rex\//, "");
 
     if (url.pathname === "/events") {
         // The tab's own controller, so that a stream that ends takes only itself out of the set.

@@ -18,14 +18,14 @@
     "version": "0.1.0",
     "source": {
         "repo": "nnutter/pi-pocket-rex",
-        "commit": "86f091e5bb793a60d9f7b2ff1f061fcd6b32d2bf",
+        "commit": "80a43f31759e471d3856dda2486bf7e74c9cb025",
         "path": "extensions"
     },
     "files": [
         {
             "name": "rex.ts",
-            "sha256": "829ab259b64f7ad26ea2a7088fce7228e50cf2e2913027f424a4eb06d5598aa7",
-            "size": 45499
+            "sha256": "835621faf4748baeeb92bd985bfa42e895335a51ec884991beb1316deec1f962",
+            "size": 49359
         },
         {
             "name": "_rex-client.ts",
@@ -34,8 +34,8 @@
         },
         {
             "name": "rex/index.js",
-            "sha256": "1c65ec7433a1436984a7767810a1ea65f07083da86a60e5174302eecffe92990",
-            "size": 26009
+            "sha256": "18986a7f981fe4f4549c6c69e0fbefeb2f8d6c5d6a26983b906a2d4967e69fa9",
+            "size": 27950
         },
         {
             "name": "rex/terminal.js",
@@ -65,6 +65,8 @@
         "sections": [],
         "wraps": [],
         "routes": [
+            "POST tabs",
+            "POST tabs/gone",
             "GET hosts",
             "GET terminals",
             "POST machines",
