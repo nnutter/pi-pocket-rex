@@ -61,6 +61,8 @@ interface Terminal {
     hostLabel: string;
     /** The Rex session and the block inside it. */
     sessionId: string;
+    /** The session's own name, which is what a person calls it in Rex. */
+    sessionLabel: string;
     blockId: string;
     cols: number;
     rows: number;
@@ -449,6 +451,7 @@ export default function createRex(_host: Host | null, web: Web) {
             host: terminal.hostKey,
             hostLabel: terminal.hostLabel,
             session: terminal.sessionId,
+            sessionLabel: terminal.sessionLabel,
             block: terminal.blockId,
             cols: terminal.cols,
             rows: terminal.rows,
@@ -670,6 +673,9 @@ export default function createRex(_host: Host | null, web: Web) {
 
         if (blockId === "") throw web.error(502, "Rex made no terminal for that session.");
 
+        // The session's own name, for the bar: a person looking at a terminal should see which one it is.
+        const named = (await client.sessions()).find((each) => each.session_id === sessionId);
+
         // The owner's size is the terminal's size, and its colors are the terminal's colors.
         await client.call("session.own_block", { session_id: sessionId, block_ids: [blockId], mode: "request" });
         await client.call(`${TERMINAL_CREATOR}.resize`, {
@@ -684,6 +690,7 @@ export default function createRex(_host: Host | null, web: Web) {
             hostKey: host.key,
             hostLabel: host.label,
             sessionId,
+            sessionLabel: named?.label ?? sessionId,
             blockId,
             cols,
             rows,

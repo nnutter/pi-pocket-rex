@@ -311,6 +311,14 @@ function TerminalPage({ pocket, close, setOpen, surface, onSwitch, target }) {
             <div class="gt-actions">
                 ${button(icon(FRAME, PLUS), "New shell", restart, "gt-restart")}
             </div>
+            ${state.session
+                ? html`<span class="gt-where muted small" title=${[state.host, state.session].filter(Boolean).join(" · ")}>
+                      ${state.host ? html`<span class="gt-where-host">${state.host}</span>` : null}${state.host &&
+                      state.session
+                          ? " · "
+                          : ""}${state.session}
+                  </span>`
+                : null}
             <div class="gt-actions">
                 ${other
                     ? button(

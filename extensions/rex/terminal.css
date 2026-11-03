@@ -672,3 +672,17 @@
     opacity: 0.6;
     cursor: default;
 }
+
+/* Which Rex session this is, in the bar: it gives way to the buttons, and its own words end in an ellipsis. */
+.gt-where {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: center;
+}
+
+.gt-where-host {
+    opacity: 0.75;
+}

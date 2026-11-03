@@ -907,7 +907,7 @@ describe("the bar above the screen", () => {
             };
         });
 
-    test("says nothing about the session, which the page around it already says", async () => {
+    test("says which Rex session it is, and nothing about the shell's title or folder", async () => {
         const page = await openPhone();
 
         try {
@@ -927,12 +927,16 @@ describe("the bar above the screen", () => {
                 words: (document.querySelector(".gt-bar")?.textContent ?? "").trim(),
             }));
 
-            // The title that a shell sets and the folder are the session's, and the page around the panel says them.
+            // The title that a shell sets and its folder are the shell's own, and the bar is not the place for them.
             expect(shown.name).toBe(false);
             expect(shown.title).toBe(false);
             expect(shown.folder).toBe(false);
             expect(shown.words).not.toContain("pi-pocket-rex");
             expect(shown.words).not.toContain("/");
+
+            // What it does say is the Rex session that the terminal is on: the Pi Pocket session around it is a
+            // different thing, and the bar is the only place that says which one this is.
+            expect(await page.$eval(".gt-where", (where) => where.textContent?.trim() ?? "")).toContain("Preview");
         } finally {
             await page.close();
         }

@@ -807,6 +807,10 @@ export class TerminalView {
             this.#id = answer.terminal.id;
             this.#apply(answer.frame);
             this.#publish({
+                // Which Rex session this is: the page around the panel says which Pi Pocket session it is, and those
+                // are not the same thing.
+                host: answer.terminal.hostLabel ?? "",
+                session: answer.terminal.sessionLabel ?? "",
                 cwd: answer.terminal.cwd,
                 alive: answer.terminal.alive,
                 exitCode: answer.terminal.exitCode,
@@ -898,6 +902,10 @@ export class TerminalView {
 
     /** Draws a frame: the rows that it names, then the cursor, the title, and the scroll position. */
     #apply(frame) {
+        // A frame that is older than the one already drawn is the snapshot that a call took before that frame arrived:
+        // the call and the frames travel apart, and the screen is the newer of the two.
+        if (this.#seq !== null && frame.seq < this.#seq) return;
+
         // A frame number that skips one means that a frame never arrived, and its rows were never drawn. The events of a
         // tab can be cut off when it is far behind, and a frame that the tab missed does not come again.
         if (this.#seq !== null && frame.seq > this.#seq + 1) this.#refresh();
