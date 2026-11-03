@@ -2,6 +2,13 @@
 // picker uses. A machine is a heading with its own icon; a session is the row under it. The filter keeps the rows that
 // match, and a machine that will not answer says so where its sessions would be.
 
+/** A session, as a stack of layers; and a new one, as the same stack with a plus. */
+export const SESSION_ICON =
+    "M7.122.392a1.75 1.75 0 0 1 1.756 0l5.003 2.902c.83.481.83 1.68 0 2.162L8.878 8.358a1.75 1.75 0 0 1-1.756 0L2.119 5.456a1.251 1.251 0 0 1 0-2.162ZM8.125 1.69a.248.248 0 0 0-.25 0l-4.63 2.685 4.63 2.685a.248.248 0 0 0 .25 0l4.63-2.685ZM1.601 7.789a.75.75 0 0 1 1.025-.273l5.249 3.044a.248.248 0 0 0 .25 0l5.249-3.044a.75.75 0 0 1 .752 1.298l-5.248 3.044a1.75 1.75 0 0 1-1.756 0L1.874 8.814A.75.75 0 0 1 1.6 7.789Zm0 3.5a.75.75 0 0 1 1.025-.273l5.249 3.044a.248.248 0 0 0 .25 0l5.249-3.044a.75.75 0 0 1 .752 1.298l-5.248 3.044a1.75 1.75 0 0 1-1.756 0l-5.248-3.044a.75.75 0 0 1-.273-1.025Z";
+
+export const NEW_SESSION_ICON =
+    "M7.122.392a1.75 1.75 0 0 1 1.756 0l5.003 2.902c.83.481.83 1.68 0 2.162L8.878 8.358a1.75 1.75 0 0 1-1.756 0L2.119 5.456a1.25 1.25 0 0 1 0-2.162ZM8.125 1.69a.25.25 0 0 0-.25 0L3.244 4.375 7.875 7.06a.25.25 0 0 0 .25 0l4.63-2.685ZM1.602 7.789a.75.75 0 0 1 1.024-.272l5.249 3.044a.749.749 0 1 1-.753 1.296L1.874 8.813a.75.75 0 0 1-.272-1.024m0 3.5a.75.75 0 0 1 1.024-.272l5.249 3.044a.749.749 0 1 1-.753 1.296l-5.248-3.044a.75.75 0 0 1-.272-1.024M11.75 15.25v-2h-2a.75.75 0 0 1 0-1.5h2v-2a.75.75 0 0 1 1.5 0v2h2a.75.75 0 0 1 0 1.5h-2v2a.75.75 0 0 1-1.5 0";
+
 /** Where the terminal keeps the session that it shows, which is what a tick in this list marks. */
 const CHOSEN = "x.rex.target";
 
@@ -25,6 +32,26 @@ const ICONS = {
         "M1.75 1h12.5c.966 0 1.75.784 1.75 1.75v2.5A1.75 1.75 0 0 1 14.25 7H1.75A1.75 1.75 0 0 1 0 5.25v-2.5C0 1.784.784 1 1.75 1Zm0 1.5a.25.25 0 0 0-.25.25v2.5c0 .138.112.25.25.25h12.5a.25.25 0 0 0 .25-.25v-2.5a.25.25 0 0 0-.25-.25ZM1.75 9h12.5c.966 0 1.75.784 1.75 1.75v2.5A1.75 1.75 0 0 1 14.25 15H1.75A1.75 1.75 0 0 1 0 13.25v-2.5C0 9.784.784 9 1.75 9Zm0 1.5a.25.25 0 0 0-.25.25v2.5c0 .138.112.25.25.25h12.5a.25.25 0 0 0 .25-.25v-2.5a.25.25 0 0 0-.25-.25ZM3 12.25a.75.75 0 0 1 .75-.75h.5a.75.75 0 0 1 0 1.5h-.5a.75.75 0 0 1-.75-.75Z",
     globe: "M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM5.78 8.75a9.64 9.64 0 0 0 1.363 4.177c.255.426.542.832.857 1.215.245-.296.551-.705.857-1.215A9.64 9.64 0 0 0 10.22 8.75Zm4.44-1.5a9.64 9.64 0 0 0-1.363-4.177c-.307-.51-.612-.919-.857-1.215a9.927 9.927 0 0 0-.857 1.215A9.64 9.64 0 0 0 5.78 7.25Zm-5.944 1.5H1.543a6.507 6.507 0 0 0 4.666 5.5c-.123-.181-.24-.365-.352-.552-.715-1.192-1.437-2.874-1.581-4.948Zm-2.733-1.5h2.733c.144-2.074.866-3.756 1.58-4.948.12-.197.237-.381.353-.552a6.507 6.507 0 0 0-4.666 5.5Zm10.181 1.5c-.144 2.074-.866 3.756-1.58 4.948-.12.197-.237.381-.353.552a6.507 6.507 0 0 0 4.666-5.5Zm2.733-1.5a6.507 6.507 0 0 0-4.666-5.5c.123.181.24.365.353.552.714 1.192 1.436 2.874 1.58 4.948Z",
 };
+
+/**
+ * One of this page's own icons, drawn here rather than by the app's `Icon`.
+ *
+ * `Icon` is a 24 by 24 stroke, and every path on this page is a 16 by 16 fill: the app's would draw one at two thirds of
+ * its size, off its own corner, and as an outline.
+ */
+export function Mark({ pocket, path, size = 16 }) {
+    return pocket.html`<svg
+        class="gt-mark"
+        width=${size}
+        height=${size}
+        viewBox="0 0 16 16"
+        fill="currentColor"
+        aria-hidden="true"
+        focusable="false"
+    >
+        <path d=${path} />
+    </svg>`;
+}
 
 /** The tick of the session that the terminal shows, as a 16 by 16 path. */
 const TICK = "M13.78 4.22a.75.75 0 0 1 0 1.06l-6.5 6.5a.75.75 0 0 1-1.06 0L3.22 8.78a.75.75 0 1 1 1.06-1.06l2.47 2.47 5.97-5.97a.75.75 0 0 1 1.06 0Z";
@@ -71,7 +98,7 @@ const Machine = ({ pocket, host, onOpen, picked }) => {
     return html`<li class="gt-machine">
         <div class="gt-machine-head">
             <span class="gt-machine-icon">
-                <${pocket.Icon} path=${iconPathOf(host.icon)} size=${16} />
+                <${Mark} pocket=${pocket} path=${iconPathOf(host.icon)} />
             </span>
             <span class="gt-machine-name">${host.label}</span>
             ${host.local ? html`<span class="gt-machine-tag">this machine</span>` : null}
@@ -91,7 +118,7 @@ const Machine = ({ pocket, host, onOpen, picked }) => {
                               onClick=${() => onOpen(host, session)}
                           >
                               <span class="gt-session-tick" aria-hidden="true">
-                                  ${picked(host, session) ? html`<${pocket.Icon} path=${TICK} size=${14} />` : null}
+                                  ${picked(host, session) ? html`<${Mark} pocket=${pocket} path=${TICK} size=${14} />` : null}
                               </span>
                               <span class="gt-session-name">${session.label}</span>
                           </button>
@@ -192,9 +219,9 @@ export function PickerPage({ pocket, onOpen, onOpenOwn }) {
 
     return html`<div class="gt-list">
         <div class="gt-filter">
-            <${pocket.Icon}
+            <${Mark}
+                pocket=${pocket}
                 path="M0 7.5a7.5 7.5 0 1 1 13.307 4.747l2.473 2.473a.749.749 0 1 1-1.06 1.06l-2.473-2.473A7.5 7.5 0 0 1 0 7.5Zm7.5-6a6 6 0 1 0 0 12 6 6 0 0 0 0-12Z"
-                size=${16}
             />
             <input
                 class="gt-filter-box"
@@ -219,7 +246,7 @@ export function PickerPage({ pocket, onOpen, onOpenOwn }) {
                   <li>
                       <button class="gt-session ${now === null ? "is-picked" : ""}" onClick=${() => onOpenOwn()}>
                           <span class="gt-session-tick" aria-hidden="true">
-                              ${now === null ? html`<${pocket.Icon} path=${TICK} size=${14} />` : null}
+                              ${now === null ? html`<${Mark} pocket=${pocket} path=${TICK} size=${14} />` : null}
                           </span>
                           <span class="gt-session-name">This conversation's own terminal</span>
                       </button>
@@ -272,14 +299,11 @@ export function PickerPage({ pocket, onOpen, onOpenOwn }) {
                       </div>
                   </div>`
                 : html`<button class="gt-session gt-new" disabled=${creating} onClick=${create}>
-                          <${pocket.Icon}
-                              path="M8 4a.75.75 0 0 1 .75.75v2.5h2.5a.75.75 0 0 1 0 1.5h-2.5v2.5a.75.75 0 0 1-1.5 0v-2.5h-2.5a.75.75 0 0 1 0-1.5h2.5v-2.5A.75.75 0 0 1 8 4Z"
-                              size=${16}
-                          />
+                          <${Mark} pocket=${pocket} path=${NEW_SESSION_ICON} />
                           <span class="gt-session-name">${creating ? "Starting…" : "New session"}</span>
                       </button>
                       <button class="gt-session gt-new" onClick=${() => setAdding(true)}>
-                          <${pocket.Icon} path=${iconPathOf("globe")} size=${16} />
+                          <${Mark} pocket=${pocket} path=${iconPathOf("globe")} />
                           <span class="gt-session-name">Add machine…</span>
                       </button>`}
         </div>

@@ -6,7 +6,7 @@
 export const pocketApi = 1;
 
 import { TerminalView, keyboardShown, restingHeight } from "./terminal.js";
-import { PickerPage, iconPathOf } from "./picker.js";
+import { NEW_SESSION_ICON, PickerPage, SESSION_ICON } from "./picker.js";
 
 /** A prompt, as a 24×24 stroked path like the app's own icons. */
 const PROMPT = "M5 7l4 4-4 4M12 16h7";
@@ -14,9 +14,11 @@ const PROMPT = "M5 7l4 4-4 4M12 16h7";
 /** The way back to the keyboard, as a 24×24 stroked path. */
 const KEYBOARD = "M3 14h18M3 10h18M6 18h12M6 6h12";
 
-/** The machines that a person can reach, as a 24×24 stroked path. */
-const GLOBE =
-    "M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18M3.6 9h16.8M3.6 15h16.8M12 3c2.5 2.5 4 5.6 4 9s-1.5 6.5-4 9c-2.5-2.5-4-5.6-4-9s1.5-6.5 4-9";
+/**
+ * A stack of sessions, as a 24×24 stroked path: the rail and the launcher take the app's icons, which are strokes on a
+ * 24-unit box, and the sessions page draws the same stack as a 16-unit fill beside a session.
+ */
+const STACK = "M12 3.25 20.5 7.75 12 12.25 3.5 7.75Zm0 8.2 6.2 3.3M3.5 12l8.5 4.5 8.5-4.5M3.5 16.25l8.5 4.5 8.5-4.5";
 
 /**
  * The row above a phone's keyboard, in the order that a shell and an editor reach for it: the keys that a soft keyboard
@@ -309,8 +311,8 @@ function TerminalPage({ pocket, close, setOpen, surface, onSwitch, target, onCho
         <div class="gt-bar">
             ${state.flash ? html`<span class="gt-flash small muted">${state.flash}</span>` : null}
             <div class="gt-actions">
-                ${button(icon(FRAME, PLUS), "New shell", restart, "gt-restart")}
-                ${button(icon(iconPathOf("globe")), "Another session", onChoose, "gt-sessions")}
+                ${button(icon(NEW_SESSION_ICON), "New shell", restart, "gt-restart")}
+                ${button(icon(SESSION_ICON), "Another session", onChoose, "gt-sessions")}
             </div>
             ${state.session
                 ? html`<span class="gt-where muted small" title=${[state.host, state.session].filter(Boolean).join(" · ")}>
@@ -523,12 +525,12 @@ export default function setup(pocket) {
     }
 
     pocket.page({ id: "sessions", title: "Rex sessions", component: Sessions });
-    pocket.rail({ id: "sessions", title: "Rex sessions", iconPath: GLOBE, page: "sessions" });
+    pocket.rail({ id: "sessions", title: "Rex sessions", iconPath: STACK, page: "sessions" });
     pocket.launcher({
         id: "sessions",
         label: "Rex sessions",
         detail: "every machine that Rex can reach, and the sessions under each",
-        iconPath: GLOBE,
+        iconPath: STACK,
         page: "sessions",
     });
 

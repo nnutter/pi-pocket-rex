@@ -738,3 +738,9 @@
 }
 
 /* Choosing another session stays in the bar at every width: the text size is a preference, and this is not. */
+
+/* An icon of the sessions page: a box of its own so that one drawing never shifts the words beside it. */
+.gt-mark {
+    display: block;
+    flex: none;
+}
