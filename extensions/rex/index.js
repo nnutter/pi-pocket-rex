@@ -1,12 +1,11 @@
-// Rex's browser module: a panel beside the conversation or a page in its place, and a launcher action,
-// that show a shell in the session's folder. `rex.ts` starts its pty and sends frames; `terminal.js` draws
-// them; `terminals.js` is the page that lists every shell, whichever session started it.
+// Rex's browser module: a panel beside the conversation or a page in its place that show a Rex session's terminal, and
+// the picker that says which session. `rex.ts` opens the block's stream and sends frames; `terminal.js` draws them;
+// `picker.js` is the tree of machines and sessions that Rex itself shows.
 
 /** The version of `pocket` this module was written for. */
 export const pocketApi = 1;
 
 import { TerminalView, keyboardShown, restingHeight } from "./terminal.js";
-import { TerminalsPage } from "./terminals.js";
 import { PickerPage } from "./picker.js";
 
 /** A prompt, as a 24×24 stroked path like the app's own icons. */
@@ -45,11 +44,16 @@ const KEYS = [
 ];
 
 /**
- * A shell that a person left -- with `exit`, or with Ctrl-D at its prompt -- says nothing: its panel just goes, whatever
- * the status of its last command said. A shell that a signal stopped is the one worth a word.
+ * A shell that a person left -- with `exit`, or with Ctrl-D at its prompt -- says nothing: its panel just goes. A shell
+ * that a signal stopped, or a program that ended with a code, is the one worth a word.
+ *
+ * Rex reports how a terminal's program ended as an exit code, and a signal as the code that the system gives it, so a
+ * shell that a person ended deliberately is the one whose code is 0.
  */
 function endedQuietly(state) {
-    return !state.signal;
+    if (typeof state.signal === "string" && state.signal !== "") return false;
+
+    return state.exitCode === null || state.exitCode === undefined || state.exitCode === 0;
 }
 
 /** How a shell ended, as one value to compare: the code and the signal, whichever said so. */
@@ -57,13 +61,17 @@ function endedAs(state) {
     return `${state.exitCode ?? ""}:${state.signal ?? ""}`;
 }
 
-/** What to say about a shell that a signal stopped. */
+/** What to say about a shell that did not end quietly. */
 function saidOf(state) {
     if (state.signal === "SIGINT") return "The shell was interrupted.";
     // The app's own end of a shell: it closes the pty, which hangs the shell up, or ends it outright.
     if (state.signal === "SIGHUP" || state.signal === "SIGTERM") return "The shell was stopped.";
+    if (typeof state.signal === "string" && state.signal !== "") return `The shell was stopped (${state.signal}).`;
 
-    return `The shell was stopped (${state.signal}).`;
+    // Rex says -1 when a program left no code of its own, which is how a signal ends one.
+    if (state.exitCode === null || state.exitCode === undefined || state.exitCode < 0) return "The shell was stopped.";
+
+    return `The shell ended (code ${state.exitCode}).`;
 }
 
 /**
@@ -147,7 +155,7 @@ function useSoftKeyboard(pocket) {
     return [up, away];
 }
 
-function TerminalPage({ pocket, close, setOpen, surface, onSwitch }) {
+function TerminalPage({ pocket, close, setOpen, surface, onSwitch, target }) {
     const { html, useEffect, useRef, useState } = pocket;
 
     const [state, setState] = useState({});
@@ -183,6 +191,7 @@ function TerminalPage({ pocket, close, setOpen, surface, onSwitch }) {
             onState: setState,
             onClose: () => closeNow.current(),
             keyboardUp: () => keyboardRef.current,
+            target: () => target(),
         });
 
         made.current = view;
@@ -416,9 +425,45 @@ export default function setup(pocket) {
         }
     };
 
+    /**
+     * The Rex session that the terminal shows, kept where a reload finds it: the picker chooses it, and the terminal page
+     * opens on the terminal of the session that was chosen last.
+     */
+    const CHOSEN = "x.rex.target";
+
+    const chosen = () => {
+        try {
+            return JSON.parse(globalThis.localStorage?.getItem(CHOSEN) ?? "null");
+        } catch {
+            return null;
+        }
+    };
+
+    /** What the terminal page adds to its call: the machine and the session, and nothing when none was chosen. */
+    const targetOf = () => {
+        const found = chosen();
+
+        return found === null ? {} : { host: found.host, session: found.session };
+    };
+
+    /** A session from the picker: it becomes the one that the terminal shows, and the terminal opens on it. */
+    const open = (host, session) => {
+        globalThis.localStorage?.setItem(CHOSEN, JSON.stringify({ host: host.key, session: session.id, label: session.label }));
+
+        if (canPanel && pocket.conversationId() !== null) pocket.openPanel("terminal");
+        else pocket.openPage("terminal");
+    };
+
     /** The terminal, on the surface that it is given: `pocket.page` and `pocket.panel` both take the fields that it has. */
     const Terminal = ({ close, surface }) =>
-        html`<${TerminalPage} pocket=${pocket} close=${close} setOpen=${setOpen} surface=${surface} onSwitch=${switchSurface} />`;
+        html`<${TerminalPage}
+            pocket=${pocket}
+            close=${close}
+            setOpen=${setOpen}
+            surface=${surface}
+            onSwitch=${switchSurface}
+            target=${targetOf}
+        />`;
     const AsPanel = ({ close }) => html`<${Terminal} close=${close} surface="panel" />`;
     const AsPage = ({ close }) => html`<${Terminal} close=${close} surface="page" />`;
 
@@ -450,27 +495,10 @@ export default function setup(pocket) {
         });
     }
 
-    function Terminals() {
-        return html`<${TerminalsPage} pocket=${pocket} />`;
-    }
-
-    // Every shell, whichever session started it: a pane that a closed tab or a reload left behind keeps one of the eight
-    // places and shows nowhere. This page is where a person finds it again, and ends it, before the eighth is gone. It
-    // draws the prompt that the terminal's tile draws, because it is the same terminal, seen from outside a session.
-    pocket.page({ id: "terminals", title: "All terminals", component: Terminals });
-    pocket.rail({ id: "terminals", title: "All terminals", iconPath: PROMPT, page: "terminals" });
-    pocket.launcher({
-        id: "terminals",
-        label: "All terminals",
-        detail: "every shell that is running, whichever session started it",
-        iconPath: PROMPT,
-        page: "terminals",
-    });
-
     // Every machine that Rex can reach, with the sessions under each: the same form as Rex's own picker, so that a
-    // person finds their work on their phone the way that they find it on their laptop.
+    // person finds their work on their phone the way that they find it on their laptop. A session opens its terminal.
     function Sessions() {
-        return html`<${PickerPage} pocket=${pocket} />`;
+        return html`<${PickerPage} pocket=${pocket} onOpen=${open} />`;
     }
 
     pocket.page({ id: "sessions", title: "Rex sessions", component: Sessions });

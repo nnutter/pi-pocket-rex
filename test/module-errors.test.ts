@@ -1,0 +1,83 @@
+/**
+ * The two ways that opening a terminal fails without a block: a machine that the list does not have, and a runtime
+ * folder that is not there.
+ *
+ * They are in a file of their own because a run of the test runner that has already opened terminals leaves a WebSocket
+ * that it will not open again, and these tests are about what the module says rather than about the runner.
+ */
+import { afterEach, expect, test } from "bun:test";
+import { join } from "node:path";
+import createRex from "../extensions/rex.ts";
+import { fakeRex, type FakeRex } from "./fake-rex.ts";
+import { fakeWeb, type FakeWeb } from "./fake-web.ts";
+
+const root = join(import.meta.dir, "..");
+const made: Array<FakeWeb | FakeRex> = [];
+
+afterEach(async () => {
+    const all = made.splice(0);
+
+    for (const each of all) if ("dispose" in each) await each.dispose();
+    for (const each of all) if (!("dispose" in each)) each.stop();
+});
+
+function serve(): FakeRex {
+    const server = fakeRex({
+        sessions: [{ session_id: "session:1", label: "cosmic-brook" }],
+        blocks: [{ block_id: "block:1", creator_name: "com.superlogical.terminal" }],
+    });
+
+    made.push(server);
+
+    return server;
+}
+
+function module(server: FakeRex, settings: Record<string, string> = {}): FakeWeb {
+    const fake = fakeWeb({
+        settings: { local: server.url, runtime: join(root, "src"), ...settings },
+        sessions: [{ id: 7, cwd: root, title: "Here", archived: false, updatedAt: 0 }],
+    });
+
+    made.push(fake);
+    createRex(fake.host as never, fake.web);
+
+    return fake;
+}
+
+test("says what to install when the runtime folder is not there", async () => {
+    const server = serve();
+    const fake = module(server, { runtime: "/nonexistent-rex-runtime" });
+
+    await expect(
+        fake.call({
+            method: "POST",
+            path: "terminals",
+            body: { host: server.url, session: "session:1", conversation: 7, cols: 40, rows: 6 },
+        }),
+    ).rejects.toMatchObject({ status: 503 });
+});
+
+test("refuses a machine that the list does not have", async () => {
+    const fake = module(serve());
+
+    await expect(
+        fake.call({
+            method: "POST",
+            path: "terminals",
+            body: { host: "ws://127.0.0.1:1", session: "session:1", conversation: 7, cols: 40, rows: 6 },
+        }),
+    ).rejects.toMatchObject({ status: 404 });
+});
+
+test("opens the first session that a machine offers when the page has not chosen one", async () => {
+    const server = serve();
+    const fake = module(server);
+
+    const answer = await fake.call<{ terminal: { session: string } }>({
+        method: "POST",
+        path: "terminals",
+        body: { cols: 40, rows: 6 },
+    });
+
+    expect(answer.terminal.session).toBe("session:1");
+});

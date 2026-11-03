@@ -51,7 +51,7 @@ function stateOf(host) {
     return count === 1 ? "1 session" : `${count} sessions`;
 }
 
-const Machine = ({ pocket, host }) => {
+const Machine = ({ pocket, host, onOpen }) => {
     const { html } = pocket;
 
     return html`<li class="gt-machine">
@@ -71,8 +71,10 @@ const Machine = ({ pocket, host }) => {
                 : null
             : html`<ul class="gt-sessions">
                   ${host.sessions.map(
-                      (session) => html`<li class="gt-session" key=${session.id}>
-                          <span class="gt-session-name">${session.label}</span>
+                      (session) => html`<li key=${session.id}>
+                          <button class="gt-session" onClick=${() => onOpen(host, session)}>
+                              <span class="gt-session-name">${session.label}</span>
+                          </button>
                       </li>`,
                   )}
               </ul>`}
@@ -83,7 +85,7 @@ const Machine = ({ pocket, host }) => {
  * The page: every machine that the module can reach, and the sessions under each. It reads again every few seconds,
  * because a session that a person opens on their laptop should show on their phone without a reload.
  */
-export function PickerPage({ pocket }) {
+export function PickerPage({ pocket, onOpen }) {
     const { html, useEffect, useRef, useState } = pocket;
 
     const [listing, setListing] = useState(null);
@@ -154,7 +156,7 @@ export function PickerPage({ pocket }) {
             ? html`<p class="muted small">No machine or session has that name.</p>`
             : null}
         <ul class="gt-list-rows">
-            ${hosted.map((host) => html`<${Machine} key=${host.key} pocket=${pocket} host=${host} />`)}
+            ${hosted.map((host) => html`<${Machine} key=${host.key} pocket=${pocket} host=${host} onOpen=${onOpen} />`)}
         </ul>
     </div>`;
 }

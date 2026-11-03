@@ -879,12 +879,12 @@ describe("how a shell's end is read", () => {
         const page = await openPanel();
 
         try {
-            // A signal that no shell can catch: the shell is gone, and nothing of its own status is left to read.
+            // A signal that no shell can catch: the shell is gone, and Rex reports that it left no code of its own.
             await type(page, "kill -9 $$\n");
 
             await page.waitForSelector(".gt-note-said", { timeout: 15_000 });
 
-            expect(await page.$eval(".gt-note-said", (note) => note.textContent)).toBe("The shell was stopped (SIGKILL).");
+            expect(await page.$eval(".gt-note-said", (note) => note.textContent)).toBe("The shell was stopped.");
             // The note is over the screen that the shell left, and the panel is still there to read it in.
             expect(await page.$(".gt-panes")).not.toBeNull();
         } finally {
@@ -1430,31 +1430,4 @@ describe("the screen", () => {
 
         return shape;
     }
-});
-
-describe("the page of every terminal", () => {
-    test("lists the shells, and ends the one that a person picks after a second tap", async () => {
-        // A tab that leaves the terminal keeps its shell, as a reload does: this page is where a person finds it again,
-        // and a shell may be in the middle of something, so ending one takes two taps.
-        const page = await openPhone();
-
-        try {
-            await page.goto(`${URL_BASE}/?page=terminals`, { waitUntil: "networkidle2" });
-            await page.waitForSelector(".gt-terminal-row");
-
-            const before = await page.$$eval(".gt-terminal-row", (rows) => rows.length);
-
-            await tap(page, ".gt-terminal-row .gt-terminal-end");
-            expect(await page.$(".gt-terminal-keep")).not.toBeNull();
-
-            await tap(page, ".gt-terminal-row .gt-terminal-end");
-            await page.waitForFunction((was) => document.querySelectorAll(".gt-terminal-row").length === was - 1, { timeout: 10_000 }, before);
-
-            const head = await page.$eval(".gt-list-head", (one) => one.textContent ?? "");
-
-            expect(head).toContain("of 8 shells running");
-        } finally {
-            await page.close();
-        }
-    }, 30_000);
 });

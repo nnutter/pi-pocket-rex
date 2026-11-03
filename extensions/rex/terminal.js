@@ -152,6 +152,7 @@ export class TerminalView {
     #onState;
     #onClose;
     #keyboardUp;
+    #target;
     #state = {};
 
     #screen = null;
@@ -186,12 +187,14 @@ export class TerminalView {
     #wheel = 0;
     #pendingScroll = 0;
 
-    constructor(pocket, { container, onState, onClose, keyboardUp }) {
+    constructor(pocket, { container, onState, onClose, keyboardUp, target }) {
         this.#pocket = pocket;
         this.#container = container;
         this.#onState = onState;
         this.#onClose = onClose;
         this.#keyboardUp = keyboardUp ?? (() => false);
+        // The Rex session whose terminal this page shows, as the picker chose it.
+        this.#target = target ?? (() => ({}));
         this.#font = Number(globalThis.localStorage?.getItem("x.rex.font")) || 13;
 
         this.#build();
@@ -786,7 +789,8 @@ export class TerminalView {
 
         try {
             const answer = await this.#pocket.api("terminals", {
-                // No session, no folder: the terminal starts in the person's home, as a new shell would.
+                // The Rex session that the picker chose, and the Pi Pocket session that this page was opened from.
+                ...this.#target(),
                 conversation: this.#pocket.conversationId() ?? undefined,
                 // A new shell is one of its own, even in the same folder.
                 ...(asNew ? { new: true } : {}),

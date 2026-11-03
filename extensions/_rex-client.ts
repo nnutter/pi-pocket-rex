@@ -132,8 +132,19 @@ async function dispatcherFor(endpoint: Endpoint): Promise<Agent | undefined> {
     return new Agent({ connect: { socketPath: endpoint.socketPath } });
 }
 
-/** A WebSocket to one endpoint, or the reason that it would not open. */
-async function open(endpoint: Endpoint, path: string, protocols: string[], timeoutMs: number): Promise<WebSocket> {
+/**
+ * A WebSocket to one endpoint, or the reason that it would not open.
+ *
+ * `listen` is called with the socket before it opens, because a server sends its first message as soon as it accepts:
+ * a listener that is added after the open event is a listener that can miss the welcome that came with it.
+ */
+async function open(
+    endpoint: Endpoint,
+    path: string,
+    protocols: string[],
+    timeoutMs: number,
+    listen?: (socket: WebSocket) => void,
+): Promise<WebSocket> {
     const dispatcher = await dispatcherFor(endpoint);
     const url = `${endpoint.base}${path}`;
 
@@ -151,6 +162,8 @@ async function open(endpoint: Endpoint, path: string, protocols: string[], timeo
         }, timeoutMs);
 
         socket.binaryType = "arraybuffer";
+
+        listen?.(socket);
 
         socket.addEventListener("open", () => {
             clearTimeout(timer);
@@ -217,6 +230,11 @@ export class RexClient {
         return this.#socket !== null && this.#socket.readyState === WebSocket.OPEN;
     }
 
+    /** The endpoint that answered, for the other connections that this server wants, such as a terminal's data. */
+    get location(): Endpoint | null {
+        return this.#connected;
+    }
+
     on(events: RexClientEvents): void {
         this.#events = { ...this.#events, ...events };
     }
@@ -231,21 +249,36 @@ export class RexClient {
 
         let last: Error | null = null;
 
-        for (const candidate of candidates) {
-            try {
-                this.#socket = await open(candidate, "/api/control", [CONTROL_PROTOCOL], Math.min(OPEN_TIMEOUT_MS, this.#timeoutMs));
-                this.#connected = candidate;
-                break;
-            } catch (error) {
-                last = error as Error;
+        // A server that accepts a connection and then says nothing would cost a person their machine for a reason that
+        // has nothing to do with the machine, so every endpoint is tried again once before the failure is theirs.
+        for (let pass = 0; pass < 2; pass += 1) {
+            for (const candidate of candidates) {
+                try {
+                    this.#socket = await open(
+                        candidate,
+                        "/api/control",
+                        [CONTROL_PROTOCOL],
+                        Math.min(OPEN_TIMEOUT_MS, this.#timeoutMs),
+                        (socket) => {
+                            socket.addEventListener("message", (message) => this.#receive(message));
+                            socket.addEventListener("close", (close) => this.#drop(`closed: ${close.reason || "no reason"}`));
+                        },
+                    );
+                    this.#connected = candidate;
+
+                    return await this.#hello();
+                } catch (error) {
+                    last = error as Error;
+                    this.#abandon();
+                }
             }
         }
 
-        if (this.#socket === null) throw last ?? new RexCallError("unreachable", "No endpoint answered", 502);
+        throw last ?? new RexCallError("unreachable", "No endpoint answered", 502);
+    }
 
-        this.#socket.addEventListener("message", (message) => this.#receive(message));
-        this.#socket.addEventListener("close", (close) => this.#drop(`closed: ${close.reason || "no reason"}`));
-
+    /** Sends the hello, and waits for the welcome that answers it. */
+    #hello(): Promise<RexWelcome> {
         const welcome = new Promise<RexWelcome>((resolve, reject) => {
             const timer = setTimeout(() => reject(new RexCallError("timeout", "The server sent no welcome", 504)), this.#timeoutMs);
 
@@ -263,6 +296,17 @@ export class RexClient {
         });
 
         return welcome;
+    }
+
+    /** Drops a connection that this client is giving up on, without telling the module that the host is gone. */
+    #abandon(): void {
+        const socket = this.#socket;
+
+        this.#socket = null;
+        this.#welcome = null;
+        this.#onWelcome = null;
+
+        if (socket !== null && socket.readyState !== WebSocket.CLOSED) socket.close();
     }
 
     #onWelcome: ((welcome: RexWelcome) => void) | null = null;
@@ -392,4 +436,332 @@ export class RexClient {
         this.#events = {};
         this.#socket = null;
     }
+}
+
+/**
+ * The terminal's stream with the parts that a screen cannot take taken out of it.
+ *
+ * A stream begins with the terminal's whole state in Ghostty's snapshot format, which is not escape sequences. Rex also
+ * puts messages of its own into the stream, where they are safe to apply: an APC that carries the connection's nonce,
+ * a resize or a theme. Neither belongs on the screen -- the module paints the screen with
+ * `com.superlogical.terminal.format`, and it reads the size from the terminal itself -- so both are dropped, and what a
+ * program actually printed goes through.
+ *
+ * The nonce is what makes this safe: a program that prints the same bytes is printing a look-alike, and it stays.
+ */
+export class RexMessageFilter {
+    readonly #marker: Buffer;
+    readonly #terminator = Buffer.from("\u001b\\", "latin1");
+    #pending = Buffer.alloc(0);
+    /** Where the filter is: in the snapshot, inside one of Rex's messages, or in what a program printed. */
+    #state: "snapshot" | "message" | "stream";
+
+    /** `started` is for a stream that is being resumed: its snapshot went when the stream began. */
+    constructor(nonce: bigint, started = false) {
+        this.#marker = Buffer.from(`\u001b_rex1;${nonce};`, "latin1");
+        this.#state = started ? "stream" : "snapshot";
+    }
+
+    /** The bytes that a screen can take, or null while there are none yet. */
+    push(bytes: Uint8Array): Uint8Array | null {
+        this.#pending = Buffer.concat([this.#pending, Buffer.from(bytes)]);
+
+        const out: Buffer[] = [];
+
+        for (;;) {
+            if (this.#state === "snapshot") {
+                const at = this.#pending.indexOf(this.#marker);
+
+                if (at < 0) {
+                    // Everything so far is the snapshot, and the snapshot is not for a screen. Keep only what could be
+                    // the start of the marker, so that one that splits across two arrivals is still found.
+                    const keep = prefixTail(this.#pending, this.#marker);
+
+                    this.#pending = this.#pending.subarray(this.#pending.length - keep);
+
+                    break;
+                }
+
+                this.#pending = this.#pending.subarray(at + this.#marker.length);
+                this.#state = "message";
+
+                continue;
+            }
+
+            if (this.#state === "message") {
+                const end = this.#pending.indexOf(this.#terminator);
+
+                // A message that has not finished arriving is not one to end early.
+                if (end < 0) break;
+
+                this.#pending = this.#pending.subarray(end + this.#terminator.length);
+                this.#state = "stream";
+
+                continue;
+            }
+
+            const at = this.#pending.indexOf(this.#marker);
+
+            if (at < 0) {
+                // A marker can split across two arrivals, so the bytes that could still become one wait for the next
+                // arrival. Only those wait: a prompt that a program printed must not sit in a buffer until it prints
+                // more.
+                const cut = this.#pending.length - prefixTail(this.#pending, this.#marker);
+
+                if (cut > 0) {
+                    out.push(this.#pending.subarray(0, cut));
+                    this.#pending = this.#pending.subarray(cut);
+                }
+
+                break;
+            }
+
+            if (at > 0) {
+                out.push(this.#pending.subarray(0, at));
+                this.#pending = this.#pending.subarray(at);
+            }
+
+            this.#pending = this.#pending.subarray(at + this.#marker.length);
+            this.#state = "message";
+        }
+
+        if (out.length === 0) return null;
+
+        return new Uint8Array(Buffer.concat(out));
+    }
+}
+
+/** The stream's welcome: what a resume needs, and the nonce that marks Rex's own messages in it. */
+export interface RexStreamWelcome {
+    token: Uint8Array;
+    keepMs: number;
+    nonce: bigint;
+}
+
+/** One data connection's messages, as the module watches it. */
+export interface RexStreamOptions {
+    client: RexClient;
+    sessionId: string;
+    blockId: string;
+    /** The stream's bytes, after the handshake. They arrive in order, and mean nothing apart from one another. */
+    onData(bytes: Uint8Array): void;
+    /** The stream ended, and could not be resumed. */
+    onEnd(reason: string): void;
+}
+
+/** How long to wait before a resume, so that a compute that dropped is not hammered. */
+const RESUME_DELAY_MS = 250;
+
+/**
+ * One terminal's bytes, from a Rex server: the ticket, the handshake, the stream, and the resume when the network blinks.
+ *
+ * A stream outlives its connection. When one drops, the server keeps the terminal's output for a minute; a resume says
+ * how many bytes arrived, and the server sends the rest. That is what keeps a phone that lost its signal from losing the
+ * screen that it was drawing.
+ */
+export class RexStream {
+    readonly #options: RexStreamOptions;
+    #socket: WebSocket | null = null;
+    #welcome: RexStreamWelcome | null = null;
+    #received = 0;
+    #closed = false;
+    #ended = false;
+    #resumeTimer: ReturnType<typeof setTimeout> | null = null;
+
+    private constructor(options: RexStreamOptions) {
+        this.#options = options;
+    }
+
+    /** Asks for a ticket, opens the data connection, and hands the first bytes to `onData`. */
+    static async open(options: RexStreamOptions): Promise<RexStream> {
+        const stream = new RexStream(options);
+        const ticket = await options.client.call<{ ticket: string }>("data.connect", {
+            session_id: options.sessionId,
+            block_id: options.blockId,
+            data_ref_id: "terminal",
+            subprotocol: TERMINAL_PROTOCOL,
+        });
+
+        await stream.#handshake(ticket.ticket, false);
+
+        return stream;
+    }
+
+    /** How many bytes of the stream have arrived, which is what a resume reports. */
+    get received(): number {
+        return this.#received;
+    }
+
+    get welcome(): RexStreamWelcome | null {
+        return this.#welcome;
+    }
+
+    /** Ends the stream for good. A stream that is only dropped is resumed. */
+    close(): void {
+        this.#closed = true;
+
+        if (this.#resumeTimer !== null) clearTimeout(this.#resumeTimer);
+
+        const socket = this.#socket;
+        this.#socket = null;
+
+        // A clean close tells the server to end the stream rather than keep it for a resume.
+        if (socket !== null && socket.readyState === WebSocket.OPEN) socket.close(1000, "bye");
+    }
+
+    async #handshake(ticket: string, resume: boolean): Promise<void> {
+        const client = this.#options.client;
+        const location = client.location;
+
+        if (location === null) throw new RexCallError("conflict", "The control connection has no endpoint", 409);
+
+        // The listeners go on before the socket opens: the server answers the handshake immediately, and a message that
+        // arrives before a listener is a message that is lost.
+        const welcome = new Promise<RexStreamWelcome>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new RexCallError("timeout", "The stream sent no welcome", 504)), 10_000);
+            // A resume arrives on a stream whose welcome is already known, so the handshake has its own place to stand.
+            let handshaking = !resume;
+
+            const done = (error: Error | null, value?: RexStreamWelcome): void => {
+                clearTimeout(timer);
+
+                if (error === null && value !== undefined) resolve(value);
+                else reject(error);
+            };
+
+            void open(location, "/api/data", [TERMINAL_PROTOCOL], 10_000, (socket) => {
+                socket.addEventListener("message", (message) => {
+                    if (typeof message.data === "string") return;
+
+                    // The first message is the handshake's answer, and everything after it is the stream.
+                    if (handshaking) {
+                        handshaking = false;
+
+                        let answer: ReturnType<typeof readHandshake>;
+
+                        try {
+                            answer = readHandshake(new Uint8Array(message.data as ArrayBuffer));
+                        } catch (error) {
+                            done(error as Error);
+
+                            return;
+                        }
+
+                        if (answer.type === "reject") {
+                            done(new RexCallError("refused", `The server refused the stream: reason ${answer.reason}`, 403));
+
+                            return;
+                        }
+
+                        this.#welcome = answer;
+                        done(null, answer);
+
+                        return;
+                    }
+
+                    const bytes = new Uint8Array(message.data as ArrayBuffer);
+
+                    this.#received += bytes.length;
+                    this.#options.onData(bytes);
+                });
+
+                socket.addEventListener("close", (close) => {
+                    if (handshaking) {
+                        done(new RexCallError("unavailable", `The stream closed during the handshake: ${close.reason}`, 503));
+
+                        return;
+                    }
+
+                    this.#dropped(close.code, close.reason);
+                });
+
+                socket.addEventListener("error", () => {
+                    if (handshaking) done(new RexCallError("unreachable", "The data connection failed", 502));
+                });
+            })
+                .then((socket) => {
+                    this.#socket = socket;
+
+                    // The handshake goes as soon as the socket opens: the server waits for it, and knows the stream by it.
+                    socket.send(resume ? frame(0x02, this.#resumeBody()) : frame(0x01, Buffer.from(ticket, "base64url")));
+                })
+                .catch((error: Error) => done(error));
+        });
+
+        await welcome;
+    }
+
+    #resumeBody(): Buffer {
+        const body = Buffer.alloc(24);
+
+        body.set(this.#welcome?.token ?? Buffer.alloc(16), 0);
+        body.writeBigUInt64LE(BigInt(this.#received), 16);
+
+        return body;
+    }
+
+    /** A connection that dropped: keep the stream, and resume it while the server still holds it. */
+    #dropped(code: number, reason: string): void {
+        this.#socket = null;
+
+        if (this.#closed || this.#ended) return;
+
+        // A stream that the block itself ended is not one to resume.
+        if (code === 1000 || code === 4000 || this.#welcome === null) {
+            this.#ended = true;
+            this.#options.onEnd(reason || "the stream ended");
+
+            return;
+        }
+
+        this.#resumeTimer = setTimeout(() => {
+            this.#resumeTimer = null;
+
+            if (this.#closed) return;
+
+            this.#handshake("", true).catch(() => {
+                if (this.#ended || this.#closed) return;
+
+                this.#ended = true;
+                this.#options.onEnd(`could not resume: ${reason}`);
+            });
+        }, RESUME_DELAY_MS);
+    }
+}
+
+/** How many bytes at the end of `buffer` could be the start of `marker`. */
+function prefixTail(buffer: Buffer, marker: Buffer): number {
+    const most = Math.min(buffer.length, marker.length - 1);
+
+    for (let length = most; length > 0; length -= 1) {
+        if (buffer.subarray(buffer.length - length).equals(marker.subarray(0, length))) return length;
+    }
+
+    return 0;
+}
+
+/** One handshake message: a tag and its body. */
+function frame(tag: number, body: Uint8Array): Uint8Array<ArrayBuffer> {
+    const out = new Uint8Array(1 + body.length);
+
+    out[0] = tag;
+    out.set(body, 1);
+
+    return out;
+}
+
+/** What the server answers a handshake with: a welcome that a resume needs, or a refusal with its reason. */
+function readHandshake(bytes: Uint8Array): (RexStreamWelcome & { type: "welcome" }) | { type: "reject"; reason: number } {
+    if (bytes[0] === 0x82) return { type: "reject", reason: bytes[1] ?? 0 };
+
+    if (bytes[0] !== 0x81 || bytes.length < 32) throw new RexCallError("internal", "A handshake message that is not one", 502);
+
+    const view = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+
+    return {
+        type: "welcome",
+        token: new Uint8Array(view.subarray(1, 17)),
+        keepMs: view.readUInt32LE(20),
+        nonce: view.readBigUInt64LE(24),
+    };
 }

@@ -1,28 +1,46 @@
 /**
- * The module against a real pty: it starts the runner, types into the shell, resizes the window, scrolls, and ends it.
- * These tests need Bun and `libghostty-vt` in this repository, which is where the runner runs from.
+ * The module against a Rex server that this test writes: the block it takes, the ownership and the size that it sets,
+ * the stream that it draws, and the calls that a key, a paste, and a resize make on the control connection.
+ *
+ * The runner is the real one, with `libghostty-vt` in this repository, so a frame here is the frame a page draws.
  */
 import { afterEach, expect, test } from "bun:test";
 import { join } from "node:path";
-import createRex from "../extensions/rex.ts";
+import createRex, { rexKeyName, rexKeyOf } from "../extensions/rex.ts";
+import { fakeRex, type FakeRex } from "./fake-rex.ts";
 import { fakeWeb, textOf, type FakeWeb, type FrameEvent } from "./fake-web.ts";
 
 const root = join(import.meta.dir, "..");
-const made: FakeWeb[] = [];
+const made: Array<FakeWeb | FakeRex> = [];
 
-function module(
-    options: { settings?: Record<string, string>; sessions?: Array<{ id: number; cwd: string; title?: string }> } = {},
-) {
+afterEach(async () => {
+    const all = made.splice(0);
+
+    // The module goes first: a server that stops under a connection leaves one in a state that only it knows about.
+    for (const each of all) if ("dispose" in each) await each.dispose();
+    for (const each of all) if (!("dispose" in each)) each.stop();
+});
+
+function serve(options: Parameters<typeof fakeRex>[0] = {}): FakeRex {
+    const server = fakeRex({
+        sessions: [{ session_id: "session:1", label: "cosmic-brook" }],
+        blocks: [{ block_id: "block:1", creator_name: "com.superlogical.terminal", label: "shell" }],
+        screen: "seeded\r\n",
+        ...options,
+    });
+
+    made.push(server);
+
+    return server;
+}
+
+function module(server: FakeRex, options: { sessions?: Array<{ id: number; cwd: string; archived?: boolean }> } = {}): FakeWeb {
     const fake = fakeWeb({
-        settings: {
-            runtime: join(root, "src"),
-            command: "/bin/bash",
-            ...options.settings,
-        },
+        settings: { local: server.url, runtime: join(root, "src") },
         sessions: (options.sessions ?? [{ id: 7, cwd: root }]).map((each) => ({
             ...each,
-            title: each.title ?? "Here",
-            archived: false,
+            title: "Here",
+            archived: each.archived ?? false,
             updatedAt: 0,
         })),
     });
@@ -33,338 +51,233 @@ function module(
     return fake;
 }
 
-afterEach(async () => {
-    for (const fake of made.splice(0)) await fake.dispose();
-});
-
-/** Waits for the frame whose text holds `wanted`, and gives that frame back. */
-async function screenShows(fake: FakeWeb, wanted: string): Promise<FrameEvent["frame"]> {
-    const event = await fake.waitFor<FrameEvent>(
-        "frame",
-        ({ frame }) => textOf(frame).includes(wanted),
-        15_000,
-    );
-
-    return event.frame;
+interface Summary {
+    id: string;
+    host: string;
+    session: string;
+    block: string;
+    cols: number;
+    rows: number;
+    alive: boolean;
 }
 
-test("starts a shell in the session's folder and draws what it prints", async () => {
-    const fake = module();
-    const opened = await fake.call<{ terminal: { id: string; cwd: string; alive: boolean } }>({
+async function open(fake: FakeWeb, server: FakeRex, body: Record<string, unknown> = {}) {
+    return fake.call<{ terminal: Summary; frame: FrameEvent["frame"] }>({
         method: "POST",
         path: "terminals",
-        body: { conversation: 7, cols: 60, rows: 12 },
+        body: { host: server.url, session: "session:1", conversation: 7, cols: 40, rows: 6, ...body },
     });
+}
 
-    expect(opened.terminal.cwd).toBe(root);
-    expect(opened.terminal.alive).toBe(true);
+/** The methods that the module called, in order. */
+function methods(server: FakeRex): string[] {
+    return server.requests.map((each) => each.method);
+}
 
-    const frame = await screenShows(fake, "$");
-    expect(frame.cols).toBe(60);
-    expect(frame.rows).toBe(12);
+test("takes the session's terminal block, and draws its screen", async () => {
+    const server = serve();
+    const fake = module(server);
+
+    const answer = await open(fake, server);
+
+    expect(answer.terminal).toMatchObject({ host: server.url, session: "session:1", block: "block:1", cols: 40, rows: 6 });
+    expect(methods(server)).toContain("session.attach");
+    expect(methods(server)).toContain("session.own_block");
+    expect(methods(server)).toContain("com.superlogical.terminal.resize");
+    expect(methods(server)).toContain("com.superlogical.terminal.format");
+
+    // The first frame is what the terminal already had on its screen.
+    await fake.waitFor<FrameEvent>("frame", (event) => textOf(event.frame).includes("seeded"));
 });
 
-test("sends keys, text, and a command line to the shell", async () => {
-    const fake = module();
-    const opened = await fake.call<{ terminal: { id: string } }>({
-        method: "POST",
-        path: "terminals",
-        body: { conversation: 7, cols: 60, rows: 12 },
-    });
+test("draws the stream after the snapshot that it starts with", async () => {
+    const server = serve({ screen: "" });
+    const fake = module(server);
 
-    await screenShows(fake, "$");
+    await open(fake, server);
+
+    // A fresh stream: the whole screen in Ghostty's format, then Rex's own message, then the program's bytes.
+    server.push(new TextEncoder().encode('GHOSTSNP\u0001\u0000binary junk\u001b_rex1;7;{"type":"resize"}\u001b\\'));
+    server.push(new TextEncoder().encode("from the stream\r\n"));
+
+    const frame = await fake.waitFor<FrameEvent>("frame", (event) => textOf(event.frame).includes("from the stream"));
+
+    expect(textOf(frame.frame)).not.toContain("GHOSTSNP");
+});
+
+test("types text, and sends keys and pastes as the events that a block takes", async () => {
+    const server = serve();
+    const fake = module(server);
+
+    const { terminal } = await open(fake, server);
+
+    server.requests.length = 0;
 
     await fake.call({
         method: "POST",
         path: "terminals/:id/input",
-        params: { id: opened.terminal.id },
-        body: { text: "echo rex-was-here" },
+        params: { id: terminal.id },
+        body: { text: "ls -la\r", keys: [{ key: "KeyC", mods: { ctrl: true }, utf8: "" }] },
     });
+
+    expect(server.requests[0]).toMatchObject({
+        method: "com.superlogical.terminal.write",
+        payload: { session_id: "session:1", block_id: "block:1", args: { data: "ls -la\r" } },
+    });
+    expect(server.requests[1]).toMatchObject({
+        method: "block.event",
+        payload: {
+            session_id: "session:1",
+            block_id: "block:1",
+            event: { type: "key", payload: { key: "key_c", mods: "ctrl", action: "press", text: "", unshifted_codepoint: 99 } },
+        },
+    });
+
     await fake.call({
         method: "POST",
-        path: "terminals/:id/input",
-        params: { id: opened.terminal.id },
-        body: { keys: [{ key: "Enter" }] },
+        path: "terminals/:id/paste",
+        params: { id: terminal.id },
+        body: { text: "echo pasted\r" },
     });
 
-    await screenShows(fake, "rex-was-here");
-
-    const frame = await fake.waitFor<FrameEvent>(
-        "frame",
-        ({ frame }) => textOf(frame).includes("rex-was-here") && textOf(frame).split("\n").length > 1,
-        10_000,
-    );
-
-    expect(textOf(frame.frame)).toContain("rex-was-here");
+    expect(server.requests.at(-1)).toMatchObject({
+        method: "block.event",
+        payload: { event: { type: "paste", payload: { text: "echo pasted\r" } } },
+    });
 });
 
-test("resizes the pty to the columns and rows that the page gives", async () => {
-    const fake = module();
-    const opened = await fake.call<{ terminal: { id: string } }>({
-        method: "POST",
-        path: "terminals",
-        body: { conversation: 7, cols: 60, rows: 12 },
-    });
+test("resizes both the screen and the terminal in Rex", async () => {
+    const server = serve();
+    const fake = module(server);
 
-    await screenShows(fake, "$");
+    const { terminal } = await open(fake, server);
 
-    await fake.call({
+    server.requests.length = 0;
+
+    const answer = await fake.call<{ ok: boolean; cols: number; rows: number }>({
         method: "POST",
         path: "terminals/:id/resize",
-        params: { id: opened.terminal.id },
+        params: { id: terminal.id },
         body: { cols: 100, rows: 30 },
     });
 
-    const frame = await fake.waitFor<FrameEvent>("frame", ({ frame }) => frame.full && frame.cols === 100 && frame.rows === 30);
-    expect(frame.frame.lines.length).toBe(30);
-
-    const listing = await fake.call<{ terminals: Array<{ cols: number; rows: number }> }>({ method: "GET", path: "terminals" });
-    expect(listing.terminals[0]).toMatchObject({ cols: 100, rows: 30 });
-});
-
-test("lists every shell with the session that it works in, and the most that it keeps", async () => {
-    const fake = module({
-        sessions: [
-            { id: 7, cwd: root },
-            { id: 8, cwd: "/", title: "Root" },
-        ],
+    expect(answer).toEqual({ ok: true, cols: 100, rows: 30 });
+    expect(server.requests.at(-1)).toMatchObject({
+        method: "com.superlogical.terminal.resize",
+        payload: { args: { columns: 100, rows: 30 } },
     });
 
-    await fake.call({ method: "POST", path: "terminals", body: { conversation: 7, cols: 60, rows: 12 } });
-    await fake.call({ method: "POST", path: "terminals", body: { conversation: 8, cols: 60, rows: 12 } });
+    // The page's size is the one that the terminal has: a frame of the same size comes back.
+    const frame = await fake.waitFor<FrameEvent>("frame", (event) => event.frame.cols === 100 && event.frame.rows === 30);
 
-    const listing = await fake.call<{
-        terminals: Array<{ conversation: number; session: string | null; alive: boolean }>;
-        max: number;
-    }>({ method: "GET", path: "terminals" });
+    expect(frame.frame.rows).toBe(30);
+});
 
-    // A page that lists them all says whose each one is: the session's title is what a person knows it by.
-    expect(listing.terminals.map((each) => [each.conversation, each.session])).toEqual([
-        [7, "Here"],
-        [8, "Root"],
-    ]);
-    expect(listing.terminals.every((each) => each.alive)).toBe(true);
+test("lists the terminals that it holds, with the machine that each is on", async () => {
+    const server = serve();
+    const fake = module(server);
+
+    const { terminal } = await open(fake, server);
+
+    const listing = await fake.call<{ terminals: Array<Summary & { hostLabel: string }>; max: number }>({
+        method: "GET",
+        path: "terminals",
+    });
+
     expect(listing.max).toBe(8);
+    expect(listing.terminals).toHaveLength(1);
+    expect(listing.terminals[0]).toMatchObject({ id: terminal.id, host: server.url, alive: true });
 });
 
-test("keeps one terminal for a session, and another for another session", async () => {
-    const fake = module({
+test("gives the block back when a person ends the terminal, and leaves the Rex session running", async () => {
+    const server = serve();
+    const fake = module(server);
+
+    const { terminal } = await open(fake, server);
+
+    server.requests.length = 0;
+
+    await fake.call({ method: "DELETE", path: "terminals/:id", params: { id: terminal.id } });
+
+    // The block is given back without waiting for it, so that a person's tap is not held by a round trip.
+    await Bun.sleep(50);
+
+    expect(server.requests.map((each) => each.method)).toContain("session.disown_block");
+    expect(server.requests.map((each) => each.method)).not.toContain("session.destroy");
+
+    await expect(fake.call({ method: "GET", path: "terminals/:id", params: { id: terminal.id } })).rejects.toMatchObject({
+        status: 404,
+    });
+});
+
+test("ends the terminal of a session that is archived, and only that session's", async () => {
+    const server = serve({
+        sessions: [
+            { session_id: "session:1", label: "one" },
+            { session_id: "session:2", label: "two" },
+        ],
+    });
+    const fake = module(server, {
         sessions: [
             { id: 7, cwd: root },
-            { id: 8, cwd: "/", title: "Root" },
+            { id: 8, cwd: root },
         ],
     });
 
-    const first = await fake.call<{ terminal: { id: string } }>({
-        method: "POST",
-        path: "terminals",
-        body: { conversation: 7, cols: 60, rows: 12 },
-    });
-    const again = await fake.call<{ terminal: { id: string } }>({
-        method: "POST",
-        path: "terminals",
-        body: { conversation: 7, cols: 80, rows: 20 },
-    });
-    const other = await fake.call<{ terminal: { id: string } }>({
-        method: "POST",
-        path: "terminals",
-        body: { conversation: 8, cols: 60, rows: 12 },
-    });
+    const first = await open(fake, server, { session: "session:1", conversation: 7 });
+    const second = await open(fake, server, { session: "session:2", conversation: 8 });
 
-    expect(again.terminal.id).toBe(first.terminal.id);
-    expect(other.terminal.id).not.toBe(first.terminal.id);
-});
+    expect(first.terminal.id).not.toBe(second.terminal.id);
 
-test("keeps a terminal for each session, though their folders are the same", async () => {
-    const fake = module({
-        sessions: [
-            { id: 7, cwd: root },
-            { id: 8, cwd: root, title: "Another" },
-        ],
-    });
-
-    const first = await fake.call<{ terminal: { id: string } }>({
-        method: "POST",
-        path: "terminals",
-        body: { conversation: 7, cols: 60, rows: 12 },
-    });
-    const other = await fake.call<{ terminal: { id: string } }>({
-        method: "POST",
-        path: "terminals",
-        body: { conversation: 8, cols: 60, rows: 12 },
-    });
-    const again = await fake.call<{ terminal: { id: string } }>({
-        method: "POST",
-        path: "terminals",
-        body: { conversation: 7, cols: 60, rows: 12 },
-    });
-
-    // A shell works in one session: another session in the same folder is another shell, and its own goes with it.
-    expect(other.terminal.id).not.toBe(first.terminal.id);
-    expect(again.terminal.id).toBe(first.terminal.id);
-});
-
-test("ends the shells of a session that is archived, and only that session's", async () => {
-    const fake = module({
-        sessions: [
-            { id: 7, cwd: root },
-            { id: 8, cwd: root, title: "Another" },
-        ],
-    });
-
-    const archived = await fake.call<{ terminal: { id: string } }>({
-        method: "POST",
-        path: "terminals",
-        body: { conversation: 7, cols: 60, rows: 12 },
-    });
-    const kept = await fake.call<{ terminal: { id: string } }>({
-        method: "POST",
-        path: "terminals",
-        body: { conversation: 8, cols: 60, rows: 12 },
-    });
-
-    await screenShows(fake, "$");
-
+    fake.sessions[0]!.archived = true;
     fake.emit("session.archived", { conversationId: 7, archived: true });
 
-    // The shell ends, and its page hears how: a person archived the session, and the shell goes with it.
-    const ended = await fake.waitFor<{ id: string }>("exit", ({ id }) => id === archived.terminal.id, 10_000);
+    const listing = await fake.call<{ terminals: Summary[] }>({ method: "GET", path: "terminals" });
 
-    expect(ended.id).toBe(archived.terminal.id);
-
-    const listed = await fake.call<{ terminals: Array<{ id: string }> }>({ method: "GET", path: "terminals" });
-
-    expect(listed.terminals.map((each) => each.id)).toEqual([kept.terminal.id]);
+    // The archived one is gone, and the one on the session that is still open is there.
+    expect(listing.terminals.map((each) => each.id)).toEqual([second.terminal.id]);
 });
 
-test("ends a shell of a session that was archived while the module was not listening", async () => {
-    const fake = module();
+test("makes a terminal in the session's folder when the session has none", async () => {
+    const server = serve({ blocks: [] });
+    const fake = module(server);
 
-    const opened = await fake.call<{ terminal: { id: string } }>({
-        method: "POST",
-        path: "terminals",
-        body: { conversation: 7, cols: 60, rows: 12 },
+    server.requests.length = 0;
+
+    await open(fake, server);
+
+    const made = server.requests.find((each) => each.method === "session.new_window");
+
+    expect(made).toBeDefined();
+    expect(made!.payload).toMatchObject({
+        session_id: "session:1",
+        layout: { block: { flavor: "com.superlogical.terminal.shell", options: { cwd: root } } },
     });
-
-    await screenShows(fake, "$");
-
-    // The session was archived, and no event reached this module: the session list is what the routes read.
-    fake.sessions[0]!.archived = true;
-
-    const listed = await fake.call<{ terminals: Array<{ id: string }> }>({ method: "GET", path: "terminals" });
-
-    expect(listed.terminals).toEqual([]);
-
-    await fake.waitFor<{ id: string }>("exit", ({ id }) => id === opened.terminal.id, 10_000);
 });
 
-test("starts no shell for a session that is archived, unless the page asks for one", async () => {
-    const fake = module({ sessions: [{ id: 7, cwd: root }] });
-
-    fake.sessions[0]!.archived = true;
-
-    const refused = fake.call({ method: "POST", path: "terminals", body: { conversation: 7, cols: 60, rows: 12 } });
-
-    await expect(refused).rejects.toThrow(/archived/);
-
-    // A person who wants a shell in an archived session says so with the panel's own button.
-    const asked = await fake.call<{ terminal: { id: string } }>({
-        method: "POST",
-        path: "terminals",
-        body: { conversation: 7, new: true, cols: 60, rows: 12 },
-    });
-
-    expect(asked.terminal.id).toBeString();
+test("names a key the way that a Rex terminal does", () => {
+    expect(rexKeyName("KeyA")).toBe("key_a");
+    expect(rexKeyName("Digit0")).toBe("digit_0");
+    expect(rexKeyName("ArrowUp")).toBe("arrow_up");
+    expect(rexKeyName("PageDown")).toBe("page_down");
+    expect(rexKeyName("F5")).toBe("f5");
+    expect(rexKeyName("Escape")).toBe("escape");
+    expect(rexKeyName("NumpadAdd")).toBe("numpad_add");
+    expect(rexKeyName("LaunchApp1")).toBe("launch_app_1");
+    expect(rexKeyName("SomethingNew")).toBe("unidentified");
 });
 
-test("shows the whole screen to a page that opens on a running terminal", async () => {
-    const fake = module();
-    const opened = await fake.call<{ terminal: { id: string } }>({
-        method: "POST",
-        path: "terminals",
-        body: { conversation: 7, cols: 60, rows: 12 },
+test("sends a key with the modifiers in the order that Rex reads them", () => {
+    expect(rexKeyOf({ key: "KeyN", mods: { ctrl: true, shift: true, alt: true, super: true }, utf8: "" })).toEqual({
+        action: "press",
+        key: "key_n",
+        mods: "shift+ctrl+alt+super",
+        consumed_mods: "",
+        text: "",
+        unshifted_codepoint: 110,
+        composing: false,
     });
 
-    await screenShows(fake, "$");
-
-    const attached = await fake.call<{ frame: FrameEvent["frame"] }>({
-        method: "GET",
-        path: "terminals/:id",
-        params: { id: opened.terminal.id },
-    });
-
-    expect(attached.frame.full).toBe(true);
-    expect(attached.frame.lines.length).toBe(12);
-});
-
-test("ends the shell, and then has no terminal at that address", async () => {
-    const fake = module();
-    const opened = await fake.call<{ terminal: { id: string } }>({
-        method: "POST",
-        path: "terminals",
-        body: { conversation: 7, cols: 60, rows: 12 },
-    });
-
-    await screenShows(fake, "$");
-
-    await fake.call({
-        method: "DELETE",
-        path: "terminals/:id",
-        params: { id: opened.terminal.id },
-    });
-
-    const listing = await fake.call<{ terminals: unknown[] }>({ method: "GET", path: "terminals" });
-    expect(listing.terminals).toHaveLength(0);
-
-    await expect(
-        fake.call({ method: "GET", path: "terminals/:id", params: { id: opened.terminal.id } }),
-    ).rejects.toThrow("No such terminal");
-});
-
-test("says what to install when the runtime folder is not there", async () => {
-    const fake = module({ settings: { runtime: "/nonexistent-rex-runtime" } });
-
-    const listing = await fake.call<{ bun: boolean; runner: boolean }>({ method: "GET", path: "terminals" });
-    expect(listing).toMatchObject({ bun: true, runner: false });
-
-    await expect(
-        fake.call({ method: "POST", path: "terminals", body: { conversation: 7, cols: 60, rows: 12 } }),
-    ).rejects.toThrow("runtime folder");
-});
-
-test("says how a shell ended, with the code that the shell gave", async () => {
-    const fake = module();
-    const opened = await fake.call<{ terminal: { id: string } }>({
-        method: "POST",
-        path: "terminals",
-        body: { conversation: 7, cols: 60, rows: 12 },
-    });
-
-    await screenShows(fake, "$");
-    await fake.call({
-        method: "POST",
-        path: "terminals/:id/input",
-        params: { id: opened.terminal.id },
-        body: { text: "exit 0\n" },
-    });
-
-    const ended = await fake.waitFor<{ id: string; code: number | null }>("exit", ({ id }) => id === opened.terminal.id, 15_000);
-
-    expect(ended.code).toBe(0);
-
-    const after = await fake.call<{ terminal: { alive: boolean; exitCode: number | null } }>({
-        method: "GET",
-        path: "terminals/:id",
-        params: { id: opened.terminal.id },
-    });
-
-    expect(after.terminal).toMatchObject({ alive: false, exitCode: 0 });
-});
-
-test("refuses a session that its person cannot see", async () => {
-    const fake = module();
-
-    await expect(
-        fake.call({ method: "POST", path: "terminals", body: { conversation: 999, cols: 60, rows: 12 } }),
-    ).rejects.toThrow("That session is not yours to see");
+    expect(rexKeyOf({ key: "Enter" })).toMatchObject({ key: "enter", mods: "", unshifted_codepoint: 0 });
+    expect(rexKeyOf({ key: "KeyA", utf8: "a" })).toMatchObject({ text: "a" });
 });

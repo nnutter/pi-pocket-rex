@@ -1,20 +1,20 @@
 /**
- * Rex: a real shell in a page, drawn on the server by Ghostty's own VT engine and typed into from the
- * browser module beside this file.
+ * Rex: a real terminal in Pi Pocket, hosted by a Rex session on this machine or another.
  *
- * Pi Pocket runs on Node, and Ghostty's binding (`libghostty-vt`) needs Bun's FFI. So this module starts one Bun
- * process for each terminal (`pty-host.ts`, in its runtime folder), gives it a pty, and passes JSON lines in and out.
- * A terminal ends with the server or with this module's next version: no shell outlives them.
+ * The shell is not this module's. It lives in a Rex terminal block, where Rex keeps it and where a person can also reach
+ * it from Rex's own app. This module is the middle: it opens the block's data connection, hands the bytes to a Bun
+ * process that draws them with Ghostty's engine (`rex-host.ts`, in its runtime folder), and sends the page's keys and
+ * text back as the events that the block takes.
  *
- * The terminal itself will live in a Rex session, on this machine or another, so this module also keeps one connection
- * to each Rex server that a person can reach: the host list first, then the terminals in it.
+ * Pi Pocket runs on Node, and `libghostty-vt` needs Bun's FFI, so the two processes talk in JSON lines: commands on
+ * stdin, frames on stdout. The internet between them and Rex is the part that a dropped connection is resumed from.
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { delimiter, join } from "node:path";
-import { RexClient } from "./_rex-client.ts";
+import { RexClient, RexStream, RexMessageFilter } from "./_rex-client.ts";
 import type { Host, Web, WebRequest, WebSession } from "./_pocket.d.ts";
 
 /**
@@ -39,13 +39,29 @@ interface Frame {
     lines: Array<{ y: number; runs: Run[] }>;
 }
 
-/** One terminal: its process, and the screen as it was after the last frame. */
+/** The block creator that every shell in Rex belongs to. */
+const TERMINAL_CREATOR = "com.superlogical.terminal";
+
+/** The most terminals at once. Beyond it, a new one is refused. */
+const MAX_TERMINALS = 8;
+
+/** How long a terminal that ended stays in the list, so its page can say what happened. */
+const KEEP_ENDED_MS = 15 * 60_000;
+
+/** How long a runner has to say that its screen is up. */
+const RUNNER_START_MS = 10_000;
+
+/** One terminal: a block in a Rex session, the runner that draws it, and the screen as it was after the last frame. */
 interface Terminal {
     id: string;
-    /** The session that this shell works in, and 0 for one that the page opened with no session at all. */
+    /** The Pi Pocket session that this terminal was opened from, and 0 for one that has none. */
     conversation: number;
-    cwd: string;
-    argv: string[];
+    /** The Rex server, by the key that its host row uses. */
+    hostKey: string;
+    hostLabel: string;
+    /** The Rex session and the block inside it. */
+    sessionId: string;
+    blockId: string;
     cols: number;
     rows: number;
     createdAt: number;
@@ -59,17 +75,16 @@ interface Terminal {
     alt: boolean;
     scrollback: number;
     seq: number;
+    client: RexClient;
+    stream: RexStream | null;
+    filter: RexMessageFilter | null;
+    /** Bytes that came before the screen was seeded: the stream starts before the first paint does. */
+    pending: Uint8Array[];
+    /** Whether the seed has been given to the runner, so that bytes can go straight through. */
+    seeded: boolean;
+    /** Resolves when the runner says that its screen is up. */
+    markReady: () => void;
 }
-
-/** The most terminals at once. Beyond it, a new one is refused. */
-const MAX_TERMINALS = 8;
-
-/** How long a terminal that ended stays in the list, so its page can say what happened. */
-const KEEP_ENDED_MS = 15 * 60_000;
-
-/** The environment that a terminal's shell gets: the person's own, less anything that is only about this server. */
-const KEPT_ENV =
-    /^(PATH|HOME|USER|LOGNAME|SHELL|LANG|LANGUAGE|TERM|TMPDIR|TZ|EDITOR|VISUAL|PAGER|MANPAGER|SSH_AUTH_SOCK|DISPLAY|WAYLAND_DISPLAY|XDG_[A-Z_]+|LC_[A-Z]+|GIT_[A-Z_]+|COLORTERM|NO_COLOR|FORCE_COLOR)$/;
 
 export default function createRex(_host: Host | null, web: Web) {
     const terminals = new Map<string, Terminal>();
@@ -85,27 +100,6 @@ export default function createRex(_host: Host | null, web: Web) {
     if (typeof web.settings === "function") {
         web.settings([
             {
-                name: "command",
-                label: "Shell",
-                type: "text",
-                placeholder: "bash",
-                description: "The program that a new terminal runs, with -l. Empty runs the person's own shell.",
-            },
-            {
-                name: "bun",
-                label: "Bun",
-                type: "text",
-                placeholder: "bun",
-                description: "The Bun binary that runs libghostty-vt. Empty finds it in PATH, or in mise's installs.",
-            },
-            {
-                name: "runtime",
-                label: "Runtime folder",
-                type: "text",
-                placeholder: join(homedir(), ".pi-pocket", "rex"),
-                description: "The folder with pty-host.ts and libghostty-vt. Empty uses the placeholder.",
-            },
-            {
                 name: "local",
                 label: "This machine's socket",
                 type: "text",
@@ -120,6 +114,20 @@ export default function createRex(_host: Host | null, web: Web) {
                 description:
                     "One for each line: a label, =, and a host or URL, or just the host. Empty uses the hosts that this machine's Rex server knows.",
             },
+            {
+                name: "bun",
+                label: "Bun",
+                type: "text",
+                placeholder: "bun",
+                description: "The Bun binary that runs libghostty-vt. Empty finds it in PATH, or in mise's installs.",
+            },
+            {
+                name: "runtime",
+                label: "Runtime folder",
+                type: "text",
+                placeholder: join(homedir(), ".pi-pocket", "rex"),
+                description: "The folder with rex-host.ts and libghostty-vt. Empty uses the placeholder.",
+            },
         ]);
     }
 
@@ -130,6 +138,36 @@ export default function createRex(_host: Host | null, web: Web) {
     };
 
     const runtimeDir = (): string => setting("runtime") || join(homedir(), ".pi-pocket", "rex");
+
+    /** The Bun binary that can run the binding: the setting, `REX_HOST_BUN`, PATH, or mise's installs. */
+    function findBun(): string | null {
+        const named = setting("bun") || process.env.REX_HOST_BUN || "";
+
+        if (named.includes("/")) {
+            if (existsSync(named)) return named;
+        } else if (named !== "") {
+            for (const folder of (process.env.PATH ?? "").split(delimiter)) {
+                if (existsSync(join(folder, named))) return join(folder, named);
+            }
+        }
+
+        const installs = join(homedir(), ".local", "share", "mise", "installs", "bun");
+
+        if (existsSync(installs)) {
+            const found = readdirSync(installs)
+                .map((each) => join(installs, each, "bin", "bun"))
+                .filter((each) => existsSync(each))
+                .sort();
+
+            if (found.length > 0) return found.at(-1)!;
+        }
+
+        for (const candidate of [join(homedir(), ".bun", "bin", "bun"), "/usr/local/bin/bun", "/usr/bin/bun"]) {
+            if (existsSync(candidate)) return candidate;
+        }
+
+        return null;
+    }
 
     /**
      * One server in the person's list: where to reach it, and what to call it. Rex's own picker shows the same thing, a
@@ -193,6 +231,8 @@ export default function createRex(_host: Host | null, web: Web) {
             app: { name: "Pi Pocket", version: "0.1.0" },
             timeoutMs: 8_000,
         });
+
+        client.on({ event: (event) => hear(host, event), close: () => void lostHost(host) });
 
         rexByKey.set(host.key, client);
 
@@ -279,6 +319,16 @@ export default function createRex(_host: Host | null, web: Web) {
         return hosts;
     }
 
+    /** The host that a page named, by the key that its row carries. */
+    async function hostOf(key: string): Promise<RexHost> {
+        const hosts = await hostList();
+        const found = hosts.find((host) => host.key === key);
+
+        if (found === undefined) throw web.error(404, "No such machine. Refresh the list of machines.");
+
+        return found;
+    }
+
     /** One host, and the sessions that it holds, or why it could not be asked. */
     async function describe(host: RexHost) {
         const base = { key: host.key, label: host.label, icon: host.icon, endpoint: host.endpoint, local: host.local };
@@ -300,65 +350,45 @@ export default function createRex(_host: Host | null, web: Web) {
         }
     }
 
-    // The picker's own call: every machine, with the sessions under it, as Rex shows them.
-    web.route("GET", "hosts", async () => ({ hosts: await Promise.all((await hostList()).map((host) => describe(host))) }));
-
-    /** The Bun binary that can run the binding: the setting, `REX_HOST_BUN`, PATH, or mise's installs. */
-    function findBun(): string | null {
-        const named = setting("bun") || process.env.REX_HOST_BUN || "";
-
-        if (named.includes("/")) {
-            if (existsSync(named)) return named;
-        } else if (named !== "") {
-            for (const folder of (process.env.PATH ?? "").split(delimiter)) {
-                if (existsSync(join(folder, named))) return join(folder, named);
-            }
+    /** The terminal that a Rex block belongs to, when this module has one. */
+    function terminalOf(hostKey: string, sessionId: string, blockId: string): Terminal | undefined {
+        for (const terminal of terminals.values()) {
+            if (terminal.hostKey === hostKey && terminal.sessionId === sessionId && terminal.blockId === blockId) return terminal;
         }
 
-        const installs = join(homedir(), ".local", "share", "mise", "installs", "bun");
-
-        if (existsSync(installs)) {
-            const found = readdirSync(installs)
-                .map((each) => join(installs, each, "bin", "bun"))
-                .filter((each) => existsSync(each))
-                .sort();
-
-            if (found.length > 0) return found.at(-1)!;
-        }
-
-        for (const candidate of [join(homedir(), ".bun", "bin", "bun"), "/usr/local/bin/bun", "/usr/bin/bun"]) {
-            if (existsSync(candidate)) return candidate;
-        }
-
-        return null;
+        return undefined;
     }
 
-    /** The shell that a new terminal runs, and its arguments. */
-    function shell(): string[] {
-        // `-l` reads the person's own profile, as their terminal does.
-        return [setting("command") || process.env.SHELL || "/bin/bash", "-l"];
+    /** What a Rex server says happened, as far as a terminal cares: its program exiting. */
+    function hear(host: RexHost, event: { type: string; payload?: unknown }): void {
+        if (event.type !== "session_event") return;
+
+        const envelope = event.payload as { session_id?: string; event?: { type?: string; payload?: unknown } } | undefined;
+        const inner = envelope?.event;
+
+        if (inner?.type !== "block_event") return;
+
+        const said = inner.payload as { block_id?: string; name?: string; payload?: { exit_code?: number } } | undefined;
+        const terminal = terminalOf(host.key, envelope?.session_id ?? "", said?.block_id ?? "");
+
+        if (terminal === undefined) return;
+
+        if (said?.name === "child_exited") ended(terminal, typeof said.payload?.exit_code === "number" ? said.payload.exit_code : null);
     }
 
-    /** What the pty gets, in a shape that a command line can carry. */
-    function environment(): Record<string, string> {
-        const env: Record<string, string> = {};
-
-        for (const [name, value] of Object.entries(process.env)) {
-            if (value !== undefined && KEPT_ENV.test(name)) env[name] = value;
-        }
-
-        env.TERM = "xterm-256color";
-        env.COLORTERM = "truecolor";
-
-        return env;
+    /** A host's connection ended. The streams on it resume or end by themselves; the list says that it is offline. */
+    async function lostHost(host: RexHost): Promise<void> {
+        if (rexByKey.get(host.key) !== undefined) rexByKey.delete(host.key);
     }
 
     function summary(terminal: Terminal) {
         return {
             id: terminal.id,
             conversation: terminal.conversation,
-            cwd: terminal.cwd,
-            argv: terminal.argv,
+            host: terminal.hostKey,
+            hostLabel: terminal.hostLabel,
+            session: terminal.sessionId,
+            block: terminal.blockId,
             cols: terminal.cols,
             rows: terminal.rows,
             title: terminal.title,
@@ -388,7 +418,7 @@ export default function createRex(_host: Host | null, web: Web) {
         web.send("frame", { id: terminal.id, frame });
     }
 
-    /** Takes one JSON line from the runner: a frame, or a word about the pty. */
+    /** Takes one JSON line from the runner: a frame, a word about the program, or an answer to give the terminal. */
     function read(terminal: Terminal, line: string): void {
         let message: Record<string, unknown>;
 
@@ -418,13 +448,13 @@ export default function createRex(_host: Host | null, web: Web) {
             }
 
             tell(terminal, frame);
+        } else if (message.t === "ready") {
+            terminal.markReady();
         } else if (message.t === "exit") {
-            if (terminal.alive) {
-                terminal.alive = false;
-                terminal.exitCode = typeof message.code === "number" ? message.code : null;
-                terminal.signal = typeof message.signal === "string" ? message.signal : null;
-                web.send("exit", { id: terminal.id, code: terminal.exitCode, signal: terminal.signal });
-            }
+            if (terminal.alive) ended(terminal, typeof message.code === "number" ? message.code : null);
+        } else if (message.t === "write") {
+            // What the terminal answered a program: the control connection types it into the block, as a person would.
+            type(terminal, Buffer.from(String(message.data ?? ""), "base64").toString("latin1")).catch(() => {});
         } else if (message.t === "clipboard") {
             // A program copied something: the clipboard is the browser's and the system's, so the page writes it.
             web.send("clipboard", { id: terminal.id, selection: message.selection, text: message.text });
@@ -437,15 +467,46 @@ export default function createRex(_host: Host | null, web: Web) {
     }
 
     function write(terminal: Terminal, message: Record<string, unknown>): void {
-        if (terminal.proc.stdin.destroyed) return;
+        if (terminal.proc === null || terminal.proc.stdin.destroyed) return;
 
         terminal.proc.stdin.write(`${JSON.stringify(message)}\n`);
     }
 
-    /** Starts the runner for one terminal and gives it the pty. */
-    function start(conversation: number, cwd: string, cols: number, rows: number): Terminal {
+    /** Types text into the block: the same call for a key's text, a paste, and the terminal's own answers. */
+    async function type(terminal: Terminal, data: string): Promise<void> {
+        if (data === "") return;
+
+        await terminal.client.call("com.superlogical.terminal.write", {
+            session_id: terminal.sessionId,
+            block_id: terminal.blockId,
+            args: { data },
+        });
+    }
+
+    /** Hands a piece of the stream to the runner, without the parts that a screen cannot take. */
+    function feed(terminal: Terminal, bytes: Uint8Array): void {
+        const rest = terminal.filter === null ? bytes : terminal.filter.push(bytes);
+
+        if (rest !== null && rest.length > 0) {
+            write(terminal, { op: "feed", data: Buffer.from(rest).toString("base64") });
+        }
+    }
+
+    /** Ends a terminal whose program exited, and says so once. */
+    function ended(terminal: Terminal, code: number | null): void {
+        if (!terminal.alive) return;
+
+        terminal.alive = false;
+        terminal.exitCode = code;
+        terminal.signal = null;
+
+        web.send("exit", { id: terminal.id, code, signal: null });
+    }
+
+    /** Starts the runner, which draws the screen that the stream fills, and gives the terminal its process. */
+    function runner(terminal: Terminal, cols: number, rows: number): void {
         const bun = findBun();
-        const runner = join(runtimeDir(), "pty-host.ts");
+        const host = join(runtimeDir(), "rex-host.ts");
 
         if (bun === null) {
             throw web.error(
@@ -454,38 +515,18 @@ export default function createRex(_host: Host | null, web: Web) {
             );
         }
 
-        if (!existsSync(runner)) {
+        if (!existsSync(host)) {
             throw web.error(
                 503,
                 `This extension needs its runtime folder, ${runtimeDir()}. Run the install step again (the extension's README tells how).`,
             );
         }
 
-        const proc = spawn(bun, ["run", runner], {
+        const proc = spawn(bun, ["run", host], {
             cwd: runtimeDir(),
-            env: environment(),
+            env: process.env as Record<string, string>,
             stdio: ["pipe", "pipe", "pipe"],
         });
-
-        const terminal: Terminal = {
-            id: randomUUID(),
-            conversation,
-            cwd,
-            argv: shell(),
-            cols,
-            rows,
-            createdAt: Date.now(),
-            title: "",
-            alive: true,
-            exitCode: null,
-            signal: null,
-            proc,
-            screen: Array.from({ length: rows }, () => []),
-            cursor: { x: 0, y: 0, visible: true, shape: "block", blink: false },
-            alt: false,
-            scrollback: 0,
-            seq: 0,
-        };
 
         let buffer = "";
 
@@ -517,23 +558,151 @@ export default function createRex(_host: Host | null, web: Web) {
             web.send("notice", { id: terminal.id, kind: "error", message: error.message });
         });
 
-        // The runner went without saying how the shell went: its own code is all that is left to say.
         proc.on("exit", (code) => {
             if (terminal.alive) {
                 terminal.alive = false;
                 terminal.exitCode = code;
+                terminal.signal = null;
                 web.send("exit", { id: terminal.id, code, signal: null });
             }
         });
 
-        write(terminal, { op: "spawn", argv: terminal.argv, cwd, cols, rows, env: environment() });
+        terminal.proc = proc;
+
+        write(terminal, { op: "start", cols, rows });
+    }
+
+    /**
+     * Opens a terminal: attach to the Rex session, take its terminal block, own it so that the size is this page's, and
+     * start the stream and the screen together.
+     */
+    async function start(
+        request: WebRequest,
+        host: RexHost,
+        sessionId: string,
+        conversation: number,
+        cols: number,
+        rows: number,
+    ): Promise<Terminal> {
+        const client = await online(host);
+
+        await client.call("session.attach", { session_id: sessionId });
+
+        const listing = await client.call<{ blocks?: Array<{ block_id: string; creator_name?: string }> | null }>(
+            "session.list_blocks",
+            { session_id: sessionId },
+        );
+
+        let blockId = (listing.blocks ?? []).find((each) => each.creator_name === TERMINAL_CREATOR)?.block_id ?? "";
+
+        if (blockId === "") {
+            // A session with no terminal is a session that has nothing to show, so it gets one in the folder of the
+            // conversation that asked for it.
+            const session = request.sessions().find((each) => each.id === conversation);
+            const made = await client.call<{ block_ids?: string[] | null }>("session.new_window", {
+                session_id: sessionId,
+                layout: { block: { flavor: `${TERMINAL_CREATOR}.shell`, options: { cwd: session?.cwd ?? homedir() } } },
+            });
+
+            blockId = made.block_ids?.[0] ?? "";
+        }
+
+        if (blockId === "") throw web.error(502, "Rex made no terminal for that session.");
+
+        // The owner's size is the terminal's size, and its colors are the terminal's colors.
+        await client.call("session.own_block", { session_id: sessionId, block_ids: [blockId], mode: "request" });
+        await client.call(`${TERMINAL_CREATOR}.resize`, {
+            session_id: sessionId,
+            block_id: blockId,
+            args: { columns: cols, rows },
+        });
+
+        const terminal: Terminal = {
+            id: randomUUID(),
+            conversation,
+            hostKey: host.key,
+            hostLabel: host.label,
+            sessionId,
+            blockId,
+            cols,
+            rows,
+            createdAt: Date.now(),
+            title: "",
+            alive: true,
+            exitCode: null,
+            signal: null,
+            proc: null as unknown as ChildProcessWithoutNullStreams,
+            screen: Array.from({ length: rows }, () => []),
+            cursor: { x: 0, y: 0, visible: true, shape: "block", blink: false },
+            alt: false,
+            scrollback: 0,
+            seq: 0,
+            client,
+            stream: null,
+            filter: null,
+            pending: [],
+            seeded: false,
+            markReady: () => {},
+        };
+
+        const ready = new Promise<void>((resolve) => {
+            const timer = setTimeout(() => resolve(), RUNNER_START_MS);
+
+            terminal.markReady = () => {
+                clearTimeout(timer);
+                resolve();
+            };
+        });
+
+        runner(terminal, cols, rows);
+        terminals.set(terminal.id, terminal);
+
+        // The stream starts first, so that nothing printed between the paint and the connection is lost: what arrives
+        // before the seed waits in `pending`.
+        const stream = await RexStream.open({
+            client,
+            sessionId,
+            blockId,
+            onData: (bytes) => {
+                if (!terminal.seeded) {
+                    terminal.pending.push(bytes);
+
+                    return;
+                }
+
+                feed(terminal, bytes);
+            },
+            onEnd: (reason) => {
+                ended(terminal, null);
+                web.send("notice", { id: terminal.id, kind: "stream", message: reason });
+            },
+        });
+
+        terminal.stream = stream;
+        terminal.filter = new RexMessageFilter(stream.welcome?.nonce ?? 0n);
+
+        // The screen that is already there: escape sequences that redraw it, so that the page opens on the session as
+        // it stands rather than on an empty screen that the next line of output would half fill.
+        const painted = await client.call<{ content?: string }>(`${TERMINAL_CREATOR}.format`, {
+            session_id: sessionId,
+            block_id: blockId,
+            args: { format: "vt", extra_cursor: true, extra_palette: true, extra_modes: true, max_bytes: 900_000 },
+        });
+
+        await ready;
+
+        write(terminal, { op: "seed", text: painted.content ?? "" });
+
+        terminal.seeded = true;
+
+        for (const bytes of terminal.pending.splice(0)) feed(terminal, bytes);
 
         return terminal;
     }
 
     /**
-     * Ends the shells of a session that is archived: an archived session has nowhere to show a terminal, so a shell that
-     * nobody can see does not keep running. Everyone who saw the session sees its shell end, since the session did.
+     * Ends the terminals of a session that is archived: an archived session has nowhere to show a terminal, so a shell
+     * that nobody can see does not keep running.
      */
     function close(conversation: number): void {
         for (const terminal of [...terminals.values()]) {
@@ -544,14 +713,25 @@ export default function createRex(_host: Host | null, web: Web) {
     }
 
     /**
-     * Ends a shell, and says that it ended. A person asked for this, or their session went, so the page closes the
-     * panel and says nothing about it: the status of a shell is its own, and a shell that is ended with a signal that it
-     * caught says nothing with it. A runner that does not end is ended outright after a moment, so that a shell cannot
-     * outlive its place.
+     * Ends a terminal, and says that it ended. A person asked for this, or their session went, so the page closes the
+     * panel and says nothing about it. The Rex session keeps running: this module was only watching it.
      */
     function end(terminal: Terminal): void {
-        write(terminal, { op: "kill" });
         terminals.delete(terminal.id);
+
+        terminal.stream?.close();
+        terminal.stream = null;
+
+        void terminal.client
+            .call("session.disown_block", { session_id: terminal.sessionId, block_ids: [terminal.blockId] })
+            .catch(() => {});
+
+        write(terminal, { op: "kill" });
+
+        const timer = setTimeout(() => terminal.proc.kill(), 1000);
+
+        timer.unref?.();
+        terminal.proc.once("exit", () => clearTimeout(timer));
 
         if (terminal.alive) {
             terminal.alive = false;
@@ -560,14 +740,9 @@ export default function createRex(_host: Host | null, web: Web) {
 
             web.send("exit", { id: terminal.id, code: null, signal: null });
         }
-
-        const timer = setTimeout(() => terminal.proc.kill(), 1000);
-
-        timer.unref?.();
-        terminal.proc.once("exit", () => clearTimeout(timer));
     }
 
-    /** Ends the shells of the sessions that this person sees as archived, for an archive that this module did not hear. */
+    /** Ends the terminals of the sessions that this person sees as archived, for an archive that this module did not hear. */
     function closeArchived(sessions: readonly WebSession[]): void {
         for (const session of sessions) {
             if (session.archived) close(session.id);
@@ -597,78 +772,80 @@ export default function createRex(_host: Host | null, web: Web) {
         return Number.isFinite(number) && number >= least && number <= most ? number : fallback;
     }
 
-    /**
-     * The session that a terminal belongs to, when the page names one that its person can see. A terminal is the session's:
-     * two sessions in one folder are two shells, and closing a session closes its own.
-     */
-    function sessionOf(sessions: readonly WebSession[], conversation: unknown): WebSession | null {
-        const wanted = Number(conversation);
-
-        if (!Number.isFinite(wanted)) return null;
-
-        const session = sessions.find((each) => each.id === wanted);
-
-        if (session === undefined) throw web.error(403, "That session is not yours to see");
-
-        return session;
-    }
+    // The picker's own call: every machine, with the sessions under it, as Rex shows them.
+    web.route("GET", "hosts", async () => ({ hosts: await Promise.all((await hostList()).map((host) => describe(host))) }));
 
     web.route("GET", "terminals", (request) => {
         closeArchived(request.sessions());
 
-        const named = new Map(request.sessions().map((each) => [each.id, each.title]));
-
         return {
-            // Every shell, with the session that it works in: the page that lists them all says whose each one is, so that
-            // a person can tell the shell beside their work from the one that a closed tab left behind.
-            terminals: [...terminals.values()].map((each) => ({ ...summary(each), session: named.get(each.conversation) ?? null })),
+            // Every terminal, with the session that it was opened from: the page that lists them all says whose each one
+            // is, so that a person can tell the terminal beside their work from the one that a closed tab left behind.
+            terminals: [...terminals.values()].map((each) => ({ ...summary(each), session: each.hostLabel })),
             max: MAX_TERMINALS,
             bun: findBun() !== null,
-            runner: existsSync(join(runtimeDir(), "pty-host.ts")),
+            runner: existsSync(join(runtimeDir(), "rex-host.ts")),
         };
     });
 
-    web.route("POST", "terminals", (request) => {
-        const session = sessionOf(request.sessions(), request.body.conversation);
-        const cwd = session?.cwd ?? homedir();
-
+    web.route("POST", "terminals", async (request) => {
         closeArchived(request.sessions());
 
-        // An archived session holds no terminal of its own: a person who wants one there asks for it by name.
-        if (session?.archived === true && request.body.new !== true) {
-            throw web.error(409, "That session is archived. New shell starts one anyway.");
+        let host = String(request.body.host ?? "") === "" ? null : await hostOf(String(request.body.host));
+        let sessionId = String(request.body.session ?? "");
+
+        // A page that has not chosen a session shows the first one that any machine offers, so that the terminal opens
+        // on something rather than on a form that a person has to fill in first.
+        if (host === null || sessionId === "") {
+            for (const each of await hostList()) {
+                try {
+                    const client = await online(each);
+                    const first = (await client.sessions())[0];
+
+                    if (first === undefined) continue;
+
+                    host = each;
+                    sessionId = first.session_id;
+                    break;
+                } catch {
+                    // A machine that will not answer is not one to open a terminal on.
+                }
+            }
         }
+
+        if (host === null || sessionId === "") throw web.error(404, "No Rex session to open. Choose one in Rex sessions.");
+
         const cols = size(request.body.cols, 20, 400, 80);
         const rows = size(request.body.rows, 5, 200, 24);
+        const conversation = Number(request.body.conversation) || 0;
 
-        // One terminal for each session: the page that reopens finds the one that it left. A new shell of the same
-        // session, which a person asks for by name, is a shell of its own.
-        const existing =
-            request.body.new === true
-                ? undefined
-                : [...terminals.values()].find(
-                      (each) => each.alive && each.conversation === (session?.id ?? 0) && each.cwd === cwd,
-                  );
+        // One terminal for each block: a page that reloads finds the one that it left rather than a second stream.
+        const existing = [...terminals.values()].find(
+            (each) => each.alive && each.hostKey === host.key && each.sessionId === sessionId,
+        );
 
         if (existing !== undefined) {
             if (existing.cols !== cols || existing.rows !== rows) {
                 existing.cols = cols;
                 existing.rows = rows;
                 write(existing, { op: "resize", cols, rows });
+                void existing.client
+                    .call(`${TERMINAL_CREATOR}.resize`, {
+                        session_id: existing.sessionId,
+                        block_id: existing.blockId,
+                        args: { columns: cols, rows },
+                    })
+                    .catch(() => {});
             }
 
             return { terminal: summary(existing), frame: snapshot(existing) };
         }
 
-        const live = [...terminals.values()].filter((each) => each.alive).length;
-
-        if (live >= MAX_TERMINALS) {
+        if ([...terminals.values()].filter((each) => each.alive).length >= MAX_TERMINALS) {
             throw web.error(429, `That is ${MAX_TERMINALS} terminals at once. End one first.`);
         }
 
-        const terminal = start(session?.id ?? 0, cwd, cols, rows);
-
-        terminals.set(terminal.id, terminal);
+        const terminal = await start(request, host, sessionId, conversation, cols, rows);
 
         const timer = setTimeout(() => {
             if (!terminal.alive) terminals.delete(terminal.id);
@@ -685,48 +862,58 @@ export default function createRex(_host: Host | null, web: Web) {
         return { terminal: summary(terminal), frame: snapshot(terminal) };
     });
 
-    web.route("POST", "terminals/:id/input", (request) => {
+    web.route("POST", "terminals/:id/input", async (request) => {
         const terminal = find(request);
 
-        write(terminal, {
-            op: "input",
-            text: typeof request.body.text === "string" ? request.body.text : undefined,
-            keys: Array.isArray(request.body.keys) ? (request.body.keys as unknown[]).slice(0, 32) : undefined,
+        if (typeof request.body.text === "string" && request.body.text !== "") await type(terminal, request.body.text);
+
+        for (const key of Array.isArray(request.body.keys) ? (request.body.keys as unknown[]).slice(0, 32) : []) {
+            await terminal.client.call("block.event", {
+                session_id: terminal.sessionId,
+                block_id: terminal.blockId,
+                event: { type: "key", payload: rexKeyOf(key as never) },
+            });
+        }
+
+        return { ok: true };
+    });
+
+    web.route("POST", "terminals/:id/paste", async (request) => {
+        const terminal = find(request);
+
+        await terminal.client.call("block.event", {
+            session_id: terminal.sessionId,
+            block_id: terminal.blockId,
+            event: { type: "paste", payload: { text: String(request.body.text ?? "") } },
         });
 
         return { ok: true };
     });
 
-    web.route("POST", "terminals/:id/paste", (request) => {
+    web.route("POST", "terminals/:id/focus", async (request) => {
         const terminal = find(request);
 
-        write(terminal, { op: "paste", text: typeof request.body.text === "string" ? request.body.text : "" });
-
-        return { ok: true };
-    });
-
-    web.route("POST", "terminals/:id/focus", (request) => {
-        const terminal = find(request);
-
-        write(terminal, { op: "focus", inside: request.body.inside === true });
+        await terminal.client.call("block.event", {
+            session_id: terminal.sessionId,
+            block_id: terminal.blockId,
+            event: { type: "focus", payload: { action: request.body.inside === true ? "in" : "out" } },
+        });
 
         return { ok: true };
     });
 
     /** The clipboard's text, for a program that asked for it: the page read it, and this is the answer to that ask. */
-    web.route("POST", "terminals/:id/clipboard", (request) => {
+    web.route("POST", "terminals/:id/clipboard", async (request) => {
         const terminal = find(request);
+        const selection = typeof request.body.selection === "string" ? request.body.selection : "c";
+        const text = typeof request.body.text === "string" ? request.body.text : "";
 
-        write(terminal, {
-            op: "clipboard",
-            selection: typeof request.body.selection === "string" ? request.body.selection : "c",
-            text: typeof request.body.text === "string" ? request.body.text : "",
-        });
+        await type(terminal, `\u001b]52;${selection};${Buffer.from(text, "utf8").toString("base64")}\u001b\\`);
 
         return { ok: true };
     });
 
-    web.route("POST", "terminals/:id/resize", (request) => {
+    web.route("POST", "terminals/:id/resize", async (request) => {
         const terminal = find(request);
         const cols = size(request.body.cols, 20, 400, terminal.cols);
         const rows = size(request.body.rows, 5, 200, terminal.rows);
@@ -735,6 +922,14 @@ export default function createRex(_host: Host | null, web: Web) {
             terminal.cols = cols;
             terminal.rows = rows;
             write(terminal, { op: "resize", cols, rows });
+
+            await terminal.client
+                .call(`${TERMINAL_CREATOR}.resize`, {
+                    session_id: terminal.sessionId,
+                    block_id: terminal.blockId,
+                    args: { columns: cols, rows },
+                })
+                .catch(() => {});
         }
 
         return { ok: true, cols, rows };
@@ -743,7 +938,7 @@ export default function createRex(_host: Host | null, web: Web) {
     web.route("POST", "terminals/:id/scroll", (request) => {
         const terminal = find(request);
         const to =
-            request.body.to === "bottom" || request.body.to === "top" ? request.body.to : Math.trunc(Number(request.body.lines)) || 0;
+            request.body.to === "bottom" || request.body.to === "top" ? request.body.to : Math.trunc(Number(request.body.to ?? request.body.lines)) || 0;
 
         write(terminal, { op: "scroll", to });
 
@@ -760,6 +955,7 @@ export default function createRex(_host: Host | null, web: Web) {
 
     web.onDispose(() => {
         for (const terminal of terminals.values()) {
+            terminal.stream?.close();
             terminal.proc.kill();
         }
 
@@ -770,4 +966,87 @@ export default function createRex(_host: Host | null, web: Web) {
 
         rexByKey.clear();
     });
+}
+
+/** The key names that a Rex terminal takes, as `block.event` lists them. */
+const KEY_NAMES = new Set(
+    (
+        "unidentified backquote backslash bracket_left bracket_right comma equal minus period quote semicolon slash " +
+        "intl_backslash intl_ro intl_yen alt_left alt_right backspace caps_lock context_menu control_left control_right " +
+        "enter meta_left meta_right shift_left shift_right space tab convert kana_mode non_convert delete end help home " +
+        "insert page_down page_up arrow_down arrow_left arrow_right arrow_up num_lock escape fn fn_lock print_screen " +
+        "scroll_lock pause browser_back browser_favorites browser_forward browser_home browser_refresh browser_search " +
+        "browser_stop eject launch_app_1 launch_app_2 launch_mail media_play_pause media_select media_stop " +
+        "media_track_next media_track_previous power sleep audio_volume_down audio_volume_mute audio_volume_up wake_up " +
+        "copy cut paste " +
+        Array.from({ length: 26 }, (_, index) => `key_${String.fromCharCode(97 + index)}`).join(" ") +
+        " " +
+        Array.from({ length: 10 }, (_, index) => `digit_${index}`).join(" ") +
+        " " +
+        Array.from({ length: 10 }, (_, index) => `numpad_${index}`).join(" ") +
+        " " +
+        Array.from({ length: 25 }, (_, index) => `f${index + 1}`).join(" ") +
+        " numpad_add numpad_backspace numpad_clear numpad_clear_entry numpad_comma numpad_decimal numpad_divide " +
+        "numpad_enter numpad_equal numpad_memory_add numpad_memory_clear numpad_memory_recall numpad_memory_store " +
+        "numpad_memory_subtract numpad_multiply numpad_paren_left numpad_paren_right numpad_subtract numpad_separator " +
+        "numpad_up numpad_down numpad_right numpad_left numpad_begin numpad_home numpad_end numpad_insert numpad_delete " +
+        "numpad_page_up numpad_page_down"
+    )
+        .split(" ")
+        .filter((name) => name !== ""),
+);
+
+/** The key that a browser names, as Rex names it: `KeyA` is `key_a`, `PageUp` is `page_up`. */
+export function rexKeyName(code: string): string {
+    if (KEY_NAMES.has(code)) return code;
+
+    // A function key keeps its number: `F1` is `f1`, not `f_1`.
+    if (/^F\d{1,2}$/.test(code)) return code.toLowerCase();
+
+    const named = code
+        .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+        .replace(/([A-Za-z])(\d)/g, "$1_$2")
+        .toLowerCase();
+
+    return KEY_NAMES.has(named) ? named : "unidentified";
+}
+
+/** The modifiers held, in the order that Rex reads them, or an empty string for none. */
+function modsOf(mods: Record<string, boolean | undefined> | undefined): string {
+    const held: string[] = [];
+
+    if (mods?.shift === true) held.push("shift");
+    if (mods?.ctrl === true) held.push("ctrl");
+    if (mods?.alt === true) held.push("alt");
+    if (mods?.super === true) held.push("super");
+
+    return held.join("+");
+}
+
+/** The code point that a key types without shift, for the bindings that follow the keyboard's layout. */
+function unshiftedOf(name: string): number {
+    const letter = /^key_([a-z])$/.exec(name);
+
+    if (letter !== null) return letter[1]!.charCodeAt(0);
+
+    const digit = /^digit_(\d)$/.exec(name);
+
+    return digit === null ? 0 : digit[1]!.charCodeAt(0);
+}
+
+/** A keydown, as the key event that a Rex terminal takes. */
+export function rexKeyOf(event: { key?: string; mods?: Record<string, boolean>; utf8?: string }): Record<string, unknown> {
+    const name = rexKeyName(String(event.key ?? ""));
+    const text = typeof event.utf8 === "string" ? event.utf8 : "";
+
+    return {
+        action: "press",
+        key: name,
+        mods: modsOf(event.mods),
+        // A browser does not say which modifiers the layout spent on a character, and Rex accepts an empty list.
+        consumed_mods: "",
+        text,
+        unshifted_codepoint: unshiftedOf(name),
+        composing: false,
+    };
 }

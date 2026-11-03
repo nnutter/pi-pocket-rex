@@ -7,10 +7,11 @@
  *
  * It is a development tool, not part of the extension: what it serves is the module and the browser module themselves.
  */
-import { homedir } from "node:os";
+import { mkdtempSync, realpathSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { realpathSync } from "node:fs";
 import createRex from "../extensions/rex.ts";
+import { RexClient } from "../extensions/_rex-client.ts";
 import { fakeWeb, type FakeWeb } from "../test/fake-web.ts";
 
 const root = join(import.meta.dir, "..");
@@ -23,13 +24,72 @@ const appFonts = join(
 );
 const port = Number(process.env.PORT ?? 4711);
 
+/**
+ * A Rex server of the preview's own, on a port that only this machine can reach.
+ *
+ * The preview runs under Bun, and the module under Node, so the Unix socket that a Rex server listens on by default is
+ * one that the preview cannot open. A plain TCP listener is the same server with an address that both can reach, and a
+ * state folder under the temporary folder keeps the preview's sessions out of the person's own Rex.
+ */
+async function previewRex(): Promise<{ endpoint: string; stop: () => void }> {
+    const named = process.env.REX_PREVIEW_LOCAL;
+
+    if (named !== undefined) return { endpoint: named, stop: () => {} };
+
+    const state = mkdtempSync(join(tmpdir(), "rex-preview-"));
+    const rexPort = await freePort();
+    const server = Bun.spawn(
+        ["rex", "server", "run", "--listen", `http://127.0.0.1:${rexPort}`, "--allow-anonymous", "--state-dir", state],
+        { stdout: "ignore", stderr: "ignore" },
+    );
+
+    const endpoint = `ws://127.0.0.1:${rexPort}`;
+    const deadline = Date.now() + 20_000;
+
+    for (;;) {
+        try {
+            const client = new RexClient({ endpoint, timeoutMs: 2_000 });
+
+            await client.connect();
+
+            // One call: a session, and the window with the shell that the preview shows.
+            await client.call("session.create", {
+                label: "Preview",
+                initial_windows: [{ layout: { block: { flavor: "com.superlogical.terminal.shell", options: { cwd: root } } } }],
+            });
+
+            client.close();
+
+            break;
+        } catch (error) {
+            if (Date.now() > deadline) throw error;
+
+            await Bun.sleep(200);
+        }
+    }
+
+    return { endpoint, stop: () => server.kill() };
+}
+
+/** A port that nothing is listening on, so that the preview's server is the preview's. */
+async function freePort(): Promise<number> {
+    const probe = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("") });
+    const taken = probe.port ?? 0;
+
+    probe.stop(true);
+
+    return taken;
+}
+
+const rex = await previewRex();
+
 const fake: FakeWeb = fakeWeb({
     settings: {
         runtime: join(root, "src"),
         command: process.env.SHELL ?? "/bin/bash",
         // The preview runs under Bun, which cannot open a Unix socket the way the module does under Node, so a person
         // who wants the sessions page to show real sessions points it at a host: REX_PREVIEW_LOCAL=wss://host:7297.
-        ...(process.env.REX_PREVIEW_LOCAL === undefined ? {} : { local: process.env.REX_PREVIEW_LOCAL }),
+        local: rex.endpoint,
     },
     sessions: [{ id: 1, title: "Preview", cwd: root, archived: false, updatedAt: Date.now() }],
 });
@@ -152,4 +212,4 @@ async function answer(request: Request): Promise<Response> {
 
 Bun.serve({ port, fetch: answer });
 
-console.log(`Rex preview: http://127.0.0.1:${port}`);
+console.log(`Rex preview: http://127.0.0.1:${port} (Rex at ${rex.endpoint})`);

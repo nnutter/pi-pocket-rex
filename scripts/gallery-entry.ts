@@ -19,7 +19,6 @@ export const FILES = [
     "rex.ts",
     "rex/index.js",
     "rex/terminal.js",
-    "rex/terminals.js",
     "rex/picker.js",
     "rex/terminal.css",
 ];

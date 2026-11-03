@@ -5,7 +5,14 @@
  * The server is a `Bun.serve` WebSocket, not a Rex server, so the test needs no Rex and no network beyond the loopback.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { endpointCandidates, RexCallError, RexClient, type RexEvent } from "../extensions/_rex-client.ts";
+import {
+    endpointCandidates,
+    RexCallError,
+    RexClient,
+    RexStream,
+    RexMessageFilter,
+    type RexEvent,
+} from "../extensions/_rex-client.ts";
 import { fakeRex } from "./fake-rex.ts";
 
 const open: Array<{ stop: () => void }> = [];
@@ -209,3 +216,184 @@ test(`a server that never says hello is a timeout`, async () => {
 
     await expect(rex.connect()).rejects.toMatchObject({ code: "timeout" });
 });
+
+describe("the stream that a screen can take", () => {
+    const at = (nonce: bigint, json = '{"type":"resize"}') => `\u001b_rex1;${nonce};${json}\u001b\\`;
+    const bytes = (text: string) => new TextEncoder().encode(text);
+    const kept = (value: Uint8Array | null) => (value === null ? "" : new TextDecoder().decode(value));
+
+    test("drops the snapshot and the Rex message that follows it, and keeps what a program printed", () => {
+        const filter = new RexMessageFilter(7n);
+        const stream = `GHOSTSNP\u0001\u0000binary junk${at(7n)}hello\r\n`;
+
+        expect(kept(filter.push(bytes(stream)))).toBe("hello\r\n");
+    });
+
+    test("drops a Rex message that comes in the middle of what a program printed", () => {
+        const filter = new RexMessageFilter(7n);
+
+        filter.push(bytes(`snapshot${at(7n)}`));
+
+        const after = filter.push(bytes(`one${at(7n, '{"type":"theme"}')}two`));
+
+        expect(kept(after)).toBe("onetwo");
+
+        // The last few bytes wait, because a marker can split across two arrivals.
+        expect(kept(filter.push(bytes("three")))).toBe("three");
+    });
+
+    test("finds a message that splits across two arrivals", () => {
+        const filter = new RexMessageFilter(7n);
+        const message = at(7n);
+
+        expect(kept(filter.push(bytes(`GHOSTSNP and more${message.slice(0, 6)}`)))).toBe("");
+
+        const after = filter.push(bytes(`${message.slice(6)}after`));
+
+        expect(kept(after)).toBe("after");
+    });
+
+    test("keeps a look-alike that a program printed, because its nonce is not this stream's", () => {
+        const filter = new RexMessageFilter(7n);
+
+        filter.push(bytes(`snapshot${at(7n)}`));
+
+        // A program can print the same bytes. Only a message with this stream's nonce is Rex's, and this one is not.
+        const lookAlike = at(8n);
+        const after = filter.push(bytes(`printed${lookAlike}${at(7n)}real`));
+
+        expect(kept(after)).toBe(`printed${lookAlike}`);
+    });
+
+    test("waits for the end of a message that has not finished arriving", () => {
+        const filter = new RexMessageFilter(7n);
+        const message = at(7n);
+
+        filter.push(bytes(`snapshot${message.slice(0, message.length - 2)}`));
+
+        expect(kept(filter.push(bytes(`${message.slice(-2)}done`)))).toBe("done");
+    });
+
+    test("passes everything through for a stream that is already past its snapshot", () => {
+        const filter = new RexMessageFilter(7n, true);
+
+        expect(kept(filter.push(bytes("first")))).toBe("first");
+        expect(kept(filter.push(bytes("second")))).toBe("second");
+    });
+});
+
+describe("the data connection", () => {
+    test("sends the hello with the ticket, and hands the stream to the module", async () => {
+        const server = serve({ data: { nonce: 7n } });
+        const rex = client(server.url);
+        const chunks: Uint8Array[] = [];
+
+        await rex.connect();
+        await rex.call("session.attach", { session_id: "session:1" });
+
+        const stream = await RexStream.open({
+            client: rex,
+            sessionId: "session:1",
+            blockId: "block:1",
+            onData: (data) => chunks.push(data),
+            onEnd: () => {},
+        });
+
+        await Bun.sleep(50);
+
+        // The hello is the tag, then the 16 bytes of the ticket that the control connection gave out.
+        expect(server.dataMessages).toHaveLength(1);
+        expect(server.dataMessages[0]![0]).toBe(0x01);
+        expect(server.dataMessages[0]!.length).toBe(17);
+        expect(stream.welcome?.nonce).toBe(7n);
+        expect(stream.welcome?.keepMs).toBe(60_000);
+
+        server.push(bytes("hello"));
+        await Bun.sleep(50);
+
+        expect(chunks.map((chunk) => new TextDecoder().decode(chunk))).toEqual(["hello"]);
+        expect(stream.received).toBe(5);
+
+        stream.close();
+    });
+
+    test("refuses a stream that the server will not open", async () => {
+        const server = serve({ data: { reject: 7 } });
+        const rex = client(server.url);
+
+        await rex.connect();
+        await rex.call("session.attach", { session_id: "session:1" });
+
+        await expect(
+            RexStream.open({
+                client: rex,
+                sessionId: "session:1",
+                blockId: "block:1",
+                onData: () => {},
+                onEnd: () => {},
+            }),
+        ).rejects.toMatchObject({ code: "refused" });
+    });
+
+    test("resumes a stream that dropped, from the byte that the module has", async () => {
+        const server = serve({ data: { nonce: 7n } });
+        const rex = client(server.url);
+        const chunks: Uint8Array[] = [];
+        const ends: string[] = [];
+
+        await rex.connect();
+        await rex.call("session.attach", { session_id: "session:1" });
+
+        const stream = await RexStream.open({
+            client: rex,
+            sessionId: "session:1",
+            blockId: "block:1",
+            onData: (data) => chunks.push(data),
+            onEnd: (reason) => ends.push(reason),
+        });
+
+        server.push(bytes("abc"));
+        await Bun.sleep(50);
+
+        server.drop();
+        await Bun.sleep(600);
+
+        // A resume is the second message: the tag, the token, and how many bytes arrived.
+        expect(server.dataMessages).toHaveLength(2);
+        expect(server.dataMessages[1]![0]).toBe(0x02);
+
+        const counted = Buffer.from(server.dataMessages[1]!).readBigUInt64LE(17);
+
+        expect(counted).toBe(3n);
+        expect(ends).toEqual([]);
+
+        stream.close();
+    });
+
+    test("ends when the block closes, rather than resuming", async () => {
+        const server = serve({ data: { nonce: 7n } });
+        const rex = client(server.url);
+        const ends: string[] = [];
+
+        await rex.connect();
+        await rex.call("session.attach", { session_id: "session:1" });
+
+        const stream = await RexStream.open({
+            client: rex,
+            sessionId: "session:1",
+            blockId: "block:1",
+            onData: () => {},
+            onEnd: (reason) => ends.push(reason),
+        });
+
+        await Bun.sleep(30);
+        stream.close();
+        await Bun.sleep(100);
+
+        expect(ends).toEqual([]);
+    });
+});
+
+function bytes(text: string): Uint8Array {
+    return new TextEncoder().encode(text);
+}
