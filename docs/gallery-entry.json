@@ -24,8 +24,8 @@
     "files": [
         {
             "name": "rex.ts",
-            "sha256": "ba4653cf35ce4f76743cf06679e9a83c2966a9d0ade04000d2bba0a3924788c7",
-            "size": 45205
+            "sha256": "829ab259b64f7ad26ea2a7088fce7228e50cf2e2913027f424a4eb06d5598aa7",
+            "size": 45499
         },
         {
             "name": "_rex-client.ts",

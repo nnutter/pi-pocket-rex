@@ -785,14 +785,22 @@ export default function createRex(_host: Host | null, web: Web) {
      * panel and says nothing about it. The Rex session keeps running: this module was only watching it.
      */
     function end(terminal: Terminal): void {
-        terminals.delete(terminal.id);
-
-        terminal.stream?.close();
-        terminal.stream = null;
+        unwatch(terminal);
 
         void terminal.client
             .call("session.disown_block", { session_id: terminal.sessionId, block_ids: [terminal.blockId] })
             .catch(() => {});
+    }
+
+    /**
+     * Stops watching a terminal: the stream closes, the runner goes, and the page is told that it ended. The block in Rex
+     * is another thing, and what becomes of it is the caller's to say.
+     */
+    function unwatch(terminal: Terminal): void {
+        terminals.delete(terminal.id);
+
+        terminal.stream?.close();
+        terminal.stream = null;
 
         write(terminal, { op: "kill" });
 
