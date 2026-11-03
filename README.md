@@ -137,7 +137,9 @@ mise run check        # typecheck, and parse the browser module as a browser doe
 ```
 
 `scripts/preview.ts` starts a Rex server of its own, in a temporary state folder and on a port of its own, creates a
-session with a shell in it, and serves the module's routes behind a small HTTP server. The preview runs under Bun, which
+session with a shell in it, and serves the module's routes behind a small HTTP server. **It must never use a server that
+holds a person's sessions:** a test types `exit` into a shell, and a server started with `--exit-empty` destroys the
+session that is left with nothing in it. The preview runs under Bun, which
 cannot open the Unix socket that a Rex server listens on by default, so it uses a TCP listener that only the machine can
 reach; `REX_PREVIEW_LOCAL` points it at another server instead.
 

@@ -30,6 +30,11 @@ const port = Number(process.env.PORT ?? 4711);
  * The preview runs under Bun, and the module under Node, so the Unix socket that a Rex server listens on by default is
  * one that the preview cannot open. A plain TCP listener is the same server with an address that both can reach, and a
  * state folder under the temporary folder keeps the preview's sessions out of the person's own Rex.
+ *
+ * **It must not be the person's own server.** `test/browser.test.ts` types `exit` into a shell to see what the page does
+ * with a shell that ended, and a Rex server started with `--exit-empty` destroys a session that has nothing left in it.
+ * An earlier version of this file used the default socket, and a test run took a real session with it. A server of the
+ * preview's own, in a folder that is thrown away, is what makes a test safe to run.
  */
 async function previewRex(): Promise<{ endpoint: string; stop: () => void }> {
     const named = process.env.REX_PREVIEW_LOCAL;
