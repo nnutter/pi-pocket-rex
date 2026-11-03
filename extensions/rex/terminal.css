@@ -617,13 +617,32 @@
     list-style: none;
 }
 
+/* A session is a row that opens its terminal, so it is a button that looks like a row: no frame of its own until a
+ * finger or a pointer is on it. */
 .gt-session {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.4rem 0.55rem;
-    border-radius: 0.45rem;
+    width: 100%;
     min-width: 0;
+    padding: 0.45rem 0.55rem;
+    border: 1px solid transparent;
+    border-radius: 0.45rem;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.gt-session:hover,
+.gt-session:focus-visible {
+    background: var(--card);
+    border-color: var(--line);
+}
+
+.gt-session:active {
+    background: color-mix(in srgb, var(--accent) 18%, var(--card));
 }
 
 .gt-session-name {
