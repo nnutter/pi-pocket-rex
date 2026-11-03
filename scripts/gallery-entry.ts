@@ -20,6 +20,7 @@ export const FILES = [
     "rex/index.js",
     "rex/terminal.js",
     "rex/terminals.js",
+    "rex/picker.js",
     "rex/terminal.css",
 ];
 

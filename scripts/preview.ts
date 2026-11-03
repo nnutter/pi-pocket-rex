@@ -24,7 +24,13 @@ const appFonts = join(
 const port = Number(process.env.PORT ?? 4711);
 
 const fake: FakeWeb = fakeWeb({
-    settings: { runtime: join(root, "src"), command: process.env.SHELL ?? "/bin/bash" },
+    settings: {
+        runtime: join(root, "src"),
+        command: process.env.SHELL ?? "/bin/bash",
+        // The preview runs under Bun, which cannot open a Unix socket the way the module does under Node, so a person
+        // who wants the sessions page to show real sessions points it at a host: REX_PREVIEW_LOCAL=wss://host:7297.
+        ...(process.env.REX_PREVIEW_LOCAL === undefined ? {} : { local: process.env.REX_PREVIEW_LOCAL }),
+    },
     sessions: [{ id: 1, title: "Preview", cwd: root, archived: false, updatedAt: Date.now() }],
 });
 

@@ -527,3 +527,111 @@
     justify-content: flex-end;
     gap: 0.4rem;
 }
+
+/*
+ * The sessions page: the machines that a person can reach and the sessions under each, in the form of Rex's own picker.
+ * The filter is the first thing on the page, because a list of every session on every machine is longer than a phone.
+ */
+.gt-filter {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex: none;
+    padding: 0.45rem 0.7rem;
+    border: 1px solid var(--line);
+    border-radius: 0.6rem;
+    background: var(--card);
+    color: var(--muted);
+}
+
+/* The box is the field's look, so the field itself has none: the border is around the glass and the text together. */
+.gt-filter-box {
+    flex: 1;
+    min-width: 0;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-size: 0.95rem;
+}
+
+.gt-filter-box::placeholder {
+    color: var(--muted);
+}
+
+/* A machine, and the sessions under it: one group that reads as one thing. */
+.gt-machine {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+}
+
+.gt-machine-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.15rem 0.2rem;
+    min-width: 0;
+}
+
+.gt-machine-icon {
+    display: inline-flex;
+    flex: none;
+    color: var(--muted);
+}
+
+.gt-machine-name {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.gt-machine-tag {
+    flex: none;
+    font-size: 0.7rem;
+    padding: 0.02rem 0.35rem;
+    border: 1px solid var(--line);
+    border-radius: 1rem;
+    color: var(--muted);
+}
+
+/* The state of a machine belongs at the end of its line, whichever words are before it. */
+.gt-machine-state {
+    margin-left: auto;
+    flex: none;
+    max-width: 45%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.gt-sessions {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    margin: 0;
+    /* Under the machine's name, so that the sessions read as belonging to it. */
+    padding: 0 0 0 1.65rem;
+    list-style: none;
+}
+
+.gt-session {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0.55rem;
+    border-radius: 0.45rem;
+    min-width: 0;
+}
+
+.gt-session-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.gt-session-line {
+    padding: 0.25rem 0 0.25rem 1.65rem;
+}

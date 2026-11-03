@@ -7,12 +7,17 @@ export const pocketApi = 1;
 
 import { TerminalView, keyboardShown, restingHeight } from "./terminal.js";
 import { TerminalsPage } from "./terminals.js";
+import { PickerPage } from "./picker.js";
 
 /** A prompt, as a 24×24 stroked path like the app's own icons. */
 const PROMPT = "M5 7l4 4-4 4M12 16h7";
 
 /** The way back to the keyboard, as a 24×24 stroked path. */
 const KEYBOARD = "M3 14h18M3 10h18M6 18h12M6 6h12";
+
+/** The machines that a person can reach, as a 24×24 stroked path. */
+const GLOBE =
+    "M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18M3.6 9h16.8M3.6 15h16.8M12 3c2.5 2.5 4 5.6 4 9s-1.5 6.5-4 9c-2.5-2.5-4-5.6-4-9s1.5-6.5 4-9";
 
 /**
  * The row above a phone's keyboard, in the order that a shell and an editor reach for it: the keys that a soft keyboard
@@ -460,6 +465,22 @@ export default function setup(pocket) {
         detail: "every shell that is running, whichever session started it",
         iconPath: PROMPT,
         page: "terminals",
+    });
+
+    // Every machine that Rex can reach, with the sessions under each: the same form as Rex's own picker, so that a
+    // person finds their work on their phone the way that they find it on their laptop.
+    function Sessions() {
+        return html`<${PickerPage} pocket=${pocket} />`;
+    }
+
+    pocket.page({ id: "sessions", title: "Rex sessions", component: Sessions });
+    pocket.rail({ id: "sessions", title: "Rex sessions", iconPath: GLOBE, page: "sessions" });
+    pocket.launcher({
+        id: "sessions",
+        label: "Rex sessions",
+        detail: "every machine that Rex can reach, and the sessions under each",
+        iconPath: GLOBE,
+        page: "sessions",
     });
 
     // A terminal that opens and closes on one key is a terminal that is beside the work rather than in the way.

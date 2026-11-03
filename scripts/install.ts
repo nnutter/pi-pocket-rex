@@ -20,7 +20,7 @@ const runtime = join(data, "rex");
 const dryRun = process.argv.includes("--dry-run");
 
 /** The files that the browser module serves, in the order that they load. */
-const browserModule = ["index.js", "terminal.js", "terminals.js", "terminal.css"];
+const browserModule = ["index.js", "terminal.js", "terminals.js", "picker.js", "terminal.css"];
 
 /** The runner and the files that it imports: the runtime folder's own, beside `libghostty-vt`. */
 const runtimeFiles = ["pty-host.ts", "escapes.ts"];
