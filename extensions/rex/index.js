@@ -6,7 +6,7 @@
 export const pocketApi = 1;
 
 import { TerminalView, keyboardShown, restingHeight } from "./terminal.js";
-import { PickerPage } from "./picker.js";
+import { PickerPage, iconPathOf } from "./picker.js";
 
 /** A prompt, as a 24×24 stroked path like the app's own icons. */
 const PROMPT = "M5 7l4 4-4 4M12 16h7";
@@ -310,6 +310,7 @@ function TerminalPage({ pocket, close, setOpen, surface, onSwitch, target, onCho
             ${state.flash ? html`<span class="gt-flash small muted">${state.flash}</span>` : null}
             <div class="gt-actions">
                 ${button(icon(FRAME, PLUS), "New shell", restart, "gt-restart")}
+                ${button(icon(iconPathOf("globe")), "Another session", onChoose, "gt-sessions")}
             </div>
             ${state.session
                 ? html`<span class="gt-where muted small" title=${[state.host, state.session].filter(Boolean).join(" · ")}>
@@ -328,7 +329,6 @@ function TerminalPage({ pocket, close, setOpen, surface, onSwitch, target, onCho
                           "gt-surface",
                       )
                     : null}
-                ${button(icon(GLOBE), "Another session", onChoose, "gt-sessions")}
                 ${button(icon(MINUS, GLASS_UNDER), "Smaller text", () => view()?.setFont(-1), "gt-font")}
                 ${button(icon(OVER_PLUS, GLASS_OVER), "Larger text", () => view()?.setFont(1), "gt-font")}
                 <span class="gt-space"></span>

@@ -1014,8 +1014,9 @@ describe("the bar above the screen", () => {
                 };
             });
 
-            // The shell's own button on the left: and on the other side, the text size and the end.
-            expect(row.order[0]).toBe("New shell");
+            // The buttons about which terminal this is on the left -- a new shell, and another session -- and on the
+            // other side, the text size and the end.
+            expect(row.order.slice(0, 2)).toEqual(["New shell", "Another session"]);
             expect(row.order.at(-1)).toBe("End");
             expect(row.beforeEnd).toBeCloseTo(row.button, 0);
             // The two groups sit at the two ends of the bar, not gathered at one.
