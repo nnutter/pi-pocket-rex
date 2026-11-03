@@ -1,7 +1,7 @@
 {
     "name": "rex",
     "title": "Rex",
-    "description": "Rex: a real terminal in Pi Pocket, beside a session or as a page of its own. Ghostty's own engine (libghostty-vt) draws the screen, so an editor's cursor shapes, its icons, and its clipboard work. It needs Bun, and a runtime folder of its own, ~/.pi-pocket/rex.",
+    "description": "Rex: your Rex sessions in Pi Pocket. Pick a session on any of your machines, the way Rex's own picker does, and work in its terminal from your phone or a laptop. Ghostty's own engine (libghostty-vt) draws the screen, so an editor's cursor shapes, its icons, and its clipboard work. It needs Bun, a Rex server, and a runtime folder of its own, ~/.pi-pocket/rex.",
     "tags": [
         "terminal",
         "shell",
@@ -18,7 +18,7 @@
     "version": "0.1.0",
     "source": {
         "repo": "nnutter/pi-pocket-rex",
-        "commit": "ccbdd0f32855b00a38c08805fa27408ef74539b4",
+        "commit": "0e1b8b35920b85c57e29de42f021fbbb29540669",
         "path": "extensions"
     },
     "files": [

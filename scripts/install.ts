@@ -79,4 +79,4 @@ if (strays.length > 0) {
     console.log(`\nNot removed, and not served unless it is one of ${browserModule.join(", ")}: ${strays.join(", ")}`);
 }
 
-console.log(`\nTurn it on in Menu → Extensions → Rex terminal.`);
+console.log(`\nTurn it on in Menu → Extensions → Rex.`);

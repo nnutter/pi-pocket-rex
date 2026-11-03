@@ -35,7 +35,7 @@ const entry = {
     name: "rex",
     title: "Rex",
     description:
-        "Rex: a real terminal in Pi Pocket, beside a session or as a page of its own. Ghostty's own engine (libghostty-vt) draws the screen, so an editor's cursor shapes, its icons, and its clipboard work. It needs Bun, and a runtime folder of its own, ~/.pi-pocket/rex.",
+        "Rex: your Rex sessions in Pi Pocket. Pick a session on any of your machines, the way Rex's own picker does, and work in its terminal from your phone or a laptop. Ghostty's own engine (libghostty-vt) draws the screen, so an editor's cursor shapes, its icons, and its clipboard work. It needs Bun, a Rex server, and a runtime folder of its own, ~/.pi-pocket/rex.",
     tags: ["terminal", "shell", "pty", "rex", "ghostty", "neovim", "editor"],
     author: { name: "Nathan Nutter", github: "nnutter" },
     version: "0.1.0",
