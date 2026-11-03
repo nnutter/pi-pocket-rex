@@ -5,12 +5,16 @@
  * Pi Pocket runs on Node, and Ghostty's binding (`libghostty-vt`) needs Bun's FFI. So this module starts one Bun
  * process for each terminal (`pty-host.ts`, in its runtime folder), gives it a pty, and passes JSON lines in and out.
  * A terminal ends with the server or with this module's next version: no shell outlives them.
+ *
+ * The terminal itself will live in a Rex session, on this machine or another, so this module also keeps one connection
+ * to each Rex server that a person can reach: the host list first, then the terminals in it.
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { delimiter, join } from "node:path";
+import { RexClient } from "./_rex-client.ts";
 import type { Host, Web, WebRequest, WebSession } from "./_pocket.d.ts";
 
 /**
@@ -70,6 +74,14 @@ const KEPT_ENV =
 export default function createRex(_host: Host | null, web: Web) {
     const terminals = new Map<string, Terminal>();
 
+    /** The socket that a Rex server on this machine listens on, which is what `rex server status` prints. */
+    function defaultSocket(): string {
+        const runtime =
+            process.env.XDG_RUNTIME_DIR ?? `/run/user/${typeof process.getuid === "function" ? process.getuid() : 0}`;
+
+        return join(runtime, "rex", "server.sock");
+    }
+
     if (typeof web.settings === "function") {
         web.settings([
             {
@@ -93,6 +105,21 @@ export default function createRex(_host: Host | null, web: Web) {
                 placeholder: join(homedir(), ".pi-pocket", "rex"),
                 description: "The folder with pty-host.ts and libghostty-vt. Empty uses the placeholder.",
             },
+            {
+                name: "local",
+                label: "This machine's socket",
+                type: "text",
+                placeholder: defaultSocket(),
+                description: "The Rex server on this machine. Empty uses XDG_RUNTIME_DIR/rex/server.sock.",
+            },
+            {
+                name: "hosts",
+                label: "Other machines",
+                type: "text",
+                placeholder: "work = rex-work.example.ts.net",
+                description:
+                    "One for each line: a label, =, and a host or URL, or just the host. Empty uses the hosts that this machine's Rex server knows.",
+            },
         ]);
     }
 
@@ -103,6 +130,178 @@ export default function createRex(_host: Host | null, web: Web) {
     };
 
     const runtimeDir = (): string => setting("runtime") || join(homedir(), ".pi-pocket", "rex");
+
+    /**
+     * One server in the person's list: where to reach it, and what to call it. Rex's own picker shows the same thing, a
+     * machine above the sessions that it holds, so the fields here are the ones that the picker needs to draw it.
+     */
+    interface RexHost {
+        /** What the page and the settings call it: the endpoint, which does not change when a label does. */
+        key: string;
+        label: string;
+        /** Rex's own name for the icon, such as `macbook` or `server.rack`. */
+        icon: string;
+        endpoint: string;
+        local: boolean;
+    }
+
+    /** The local server's socket: the setting, or the place that a Rex server on this machine listens. */
+    function localSocket(): string {
+        const named = setting("local");
+
+        if (named === "") return defaultSocket();
+
+        return named.startsWith("unix://") ? named.slice("unix://".length) : named;
+    }
+
+    /** The hosts that the `hosts` setting names, one for each line: `label = endpoint`, or just the endpoint. */
+    function configuredHosts(): RexHost[] {
+        return setting("hosts")
+            .split("\n")
+            .map((line) => line.trim())
+            .filter((line) => line !== "" && !line.startsWith("#"))
+            .map((line) => {
+                const cut = line.indexOf("=");
+                const endpoint = (cut < 0 ? line : line.slice(cut + 1)).trim();
+                const named = cut < 0 ? "" : line.slice(0, cut).trim();
+
+                return { key: endpoint, label: named || endpoint, icon: "globe", endpoint, local: false };
+            });
+    }
+
+    /** The server on this machine, when it is running: no host list can name it, because it is the one being asked. */
+    function localHost(): RexHost | null {
+        const endpoint = localSocket();
+
+        // A path is a socket that either is there or is not; a host or a URL is something to try.
+        if (endpoint.startsWith("/") && !existsSync(endpoint)) return null;
+
+        return { key: endpoint, label: hostname(), icon: "desktopcomputer", endpoint, local: true };
+    }
+
+    /** One connection for each host, kept for the life of the module so that the page does not reconnect on every look. */
+    const rexByKey = new Map<string, RexClient>();
+    const connecting = new Map<string, Promise<RexClient>>();
+
+    function rexFor(host: RexHost): RexClient {
+        const existing = rexByKey.get(host.key);
+
+        if (existing !== undefined) return existing;
+
+        const client = new RexClient({
+            endpoint: host.endpoint,
+            app: { name: "Pi Pocket", version: "0.1.0" },
+            timeoutMs: 8_000,
+        });
+
+        rexByKey.set(host.key, client);
+
+        return client;
+    }
+
+    /** The host's connection, opened if it is not open. Two calls that arrive together share one connection. */
+    async function online(host: RexHost): Promise<RexClient> {
+        const client = rexFor(host);
+
+        if (client.connected) return client;
+
+        const started = connecting.get(host.key);
+
+        if (started !== undefined) return started;
+
+        const attempt = (async () => {
+            try {
+                await client.connect();
+
+                return client;
+            } finally {
+                connecting.delete(host.key);
+            }
+        })();
+
+        connecting.set(host.key, attempt);
+
+        return attempt;
+    }
+
+    /** Forgets a host that failed, so that the next look at it starts a new connection rather than a dead one. */
+    function offline(host: RexHost): void {
+        const client = rexByKey.get(host.key);
+
+        if (client === undefined) return;
+
+        client.close();
+        rexByKey.delete(host.key);
+    }
+
+    /**
+     * Every server that the person can reach, in the order that Rex's picker shows them: this machine first, then the
+     * hosts that it knows, then the ones that the setting names. Two entries for one endpoint are one entry.
+     */
+    async function hostList(): Promise<RexHost[]> {
+        const hosts: RexHost[] = [];
+        const seen = new Set<string>();
+
+        const add = (host: RexHost): void => {
+            if (host.endpoint === "" || seen.has(host.endpoint)) return;
+
+            seen.add(host.endpoint);
+            hosts.push(host);
+        };
+
+        const local = localHost();
+
+        if (local !== null) {
+            add(local);
+
+            // The local server's host list is the one that Rex.app shows: read it, and fall back to the setting.
+            try {
+                const client = await online(local);
+
+                for (const entry of await client.hosts()) {
+                    const endpoint = entry.endpoints?.[0] ?? "";
+
+                    add({
+                        key: endpoint,
+                        label: entry.label || endpoint,
+                        icon: entry.icon || "globe",
+                        endpoint,
+                        local: false,
+                    });
+                }
+            } catch {
+                // The local server is down. The setting can still name the hosts that matter.
+            }
+        }
+
+        for (const host of configuredHosts()) add(host);
+
+        return hosts;
+    }
+
+    /** One host, and the sessions that it holds, or why it could not be asked. */
+    async function describe(host: RexHost) {
+        const base = { key: host.key, label: host.label, icon: host.icon, endpoint: host.endpoint, local: host.local };
+
+        try {
+            const client = await online(host);
+            const sessions = await client.sessions();
+
+            return {
+                ...base,
+                online: true,
+                address: client.address,
+                sessions: sessions.map((session) => ({ id: session.session_id, label: session.label ?? session.session_id })),
+            };
+        } catch (error) {
+            offline(host);
+
+            return { ...base, online: false, address: "", error: error instanceof Error ? error.message : String(error), sessions: [] };
+        }
+    }
+
+    // The picker's own call: every machine, with the sessions under it, as Rex shows them.
+    web.route("GET", "hosts", async () => ({ hosts: await Promise.all((await hostList()).map((host) => describe(host))) }));
 
     /** The Bun binary that can run the binding: the setting, `REX_HOST_BUN`, PATH, or mise's installs. */
     function findBun(): string | null {
@@ -565,5 +764,10 @@ export default function createRex(_host: Host | null, web: Web) {
         }
 
         terminals.clear();
+
+        // A Rex session keeps running without this module, so the connections only stop being watched.
+        for (const client of rexByKey.values()) client.close();
+
+        rexByKey.clear();
     });
 }
