@@ -1,0 +1,86 @@
+{
+    "name": "rex",
+    "title": "Rex",
+    "description": "Rex: your Rex sessions in Pi Pocket. Pick a session on any of your machines, the way Rex's own picker does, and work in its terminal from your phone or a laptop. Ghostty's own engine (libghostty-vt) draws the screen, so an editor's cursor shapes, its icons, and its clipboard work. It needs Bun, a Rex server, and a runtime folder of its own, ~/.pi-pocket/rex.",
+    "tags": [
+        "terminal",
+        "shell",
+        "pty",
+        "rex",
+        "ghostty",
+        "neovim",
+        "editor"
+    ],
+    "author": {
+        "name": "Nathan Nutter",
+        "github": "nnutter"
+    },
+    "version": "0.1.0",
+    "source": {
+        "repo": "nnutter/pi-pocket-rex",
+        "commit": "d05da9707e0136e426e7e3579b3eeb4284a823cd",
+        "path": "extensions"
+    },
+    "files": [
+        {
+            "name": "rex.ts",
+            "sha256": "ba4653cf35ce4f76743cf06679e9a83c2966a9d0ade04000d2bba0a3924788c7",
+            "size": 45205
+        },
+        {
+            "name": "_rex-client.ts",
+            "sha256": "acee740cf1c79dc6e76feb330dd5c49d6c1d6e3014aee42111ccbc13fe6dbd9e",
+            "size": 28373
+        },
+        {
+            "name": "rex/index.js",
+            "sha256": "24c9e3dadcd3eddf489fb78818bf6c9847605750c59bd3eef257adc646642a34",
+            "size": 23781
+        },
+        {
+            "name": "rex/terminal.js",
+            "sha256": "87a6807783a4e28b0d1d984bdd236d946a5536d9e7cf1b889a7a885b5a706693",
+            "size": 36917
+        },
+        {
+            "name": "rex/picker.js",
+            "sha256": "5ed4391331bc5880f54aacf6e21e0222b258ed08dcc5e3c36c3b82d445d6e6ae",
+            "size": 15515
+        },
+        {
+            "name": "rex/terminal.css",
+            "sha256": "ebcb8187ecdb0a368aeccb7592e127166a0aa2625e6f81d1552497345d53ee49",
+            "size": 18810
+        }
+    ],
+    "pocketApi": 2,
+    "minPocket": "0.22.0",
+    "declares": {
+        "extensions": [
+            "rex"
+        ],
+        "tools": [],
+        "readOnlyTools": [],
+        "hooks": [],
+        "sections": [],
+        "wraps": [],
+        "routes": [
+            "GET hosts",
+            "GET terminals",
+            "POST machines",
+            "POST sessions",
+            "POST terminals",
+            "GET terminals/:id",
+            "POST terminals/:id/input",
+            "POST terminals/:id/paste",
+            "POST terminals/:id/focus",
+            "POST terminals/:id/clipboard",
+            "POST terminals/:id/resize",
+            "POST terminals/:id/scroll",
+            "DELETE terminals/:id"
+        ],
+        "client": "owner",
+        "access": "owner"
+    },
+    "revoked": []
+}

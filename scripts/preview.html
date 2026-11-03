@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta
+            name="viewport"
+            content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+        />
+        <title>Rex preview</title>
+        <style>
+            /* Pi Pocket's own fonts, so that a preview of the page is a preview of what the app draws. */
+            @font-face {
+                font-family: "Pocket Mono";
+                src: url("/fonts/JetBrainsMono.woff2") format("woff2");
+                font-weight: 100 800;
+                font-display: swap;
+            }
+
+            @font-face {
+                font-family: "Pocket Nerd Symbols";
+                src: url("/fonts/NerdFontsSymbolsMono.woff2") format("woff2");
+                font-display: swap;
+                unicode-range: U+E000-F8FF, U+F0000-F1AF0;
+            }
+
+            :root {
+                --bg: #1b1f27;
+                --text: #e4e8f1;
+                --muted: #98a2b3;
+                --accent: #7aa2f7;
+                --line: #2a3140;
+                --card: #222834;
+                --err: #f7768e;
+            }
+            body {
+                margin: 0;
+                padding: 8px;
+                height: 100dvh;
+                box-sizing: border-box;
+                background: var(--bg);
+                color: var(--text);
+                font-family: system-ui, sans-serif;
+            }
+            #page {
+                height: 100%;
+                display: flex;
+                flex-direction: column;
+                min-height: 0;
+            }
+            .button {
+                border: 1px solid var(--line);
+                background: var(--card);
+                color: var(--text);
+                border-radius: 8px;
+                padding: 0.3rem 0.6rem;
+                font: inherit;
+            }
+            .small {
+                font-size: 0.8rem;
+            }
+            .muted {
+                color: var(--muted);
+            }
+            .error-box {
+                color: var(--err);
+            }
+        </style>
+    </head>
+    <body>
+        <div id="page"></div>
+        <script type="importmap">
+            {
+                "imports": {
+                    "preact": "/vendor/preact.mjs",
+                    "preact/hooks": "/vendor/hooks.mjs"
+                }
+            }
+        </script>
+        <script type="module">
+            // The page that Pi Pocket shows, with a pretend Pi Pocket around it: the same module and the same page.
+            import { h, Fragment, render } from "/vendor/preact.mjs";
+            import { useEffect, useRef, useState } from "/vendor/hooks.mjs";
+            import htm from "/vendor/htm.mjs";
+            import setup from "/x/index.js";
+
+            const html = htm.bind(h);
+            const listeners = new Map();
+            // The pages and panels that the module adds, by kind and id, and the one that shows: the app has one page and
+            // one panel, and the preview names the one that it shows in its address, as `?page=terminals` or
+            // `?panel=terminal`.
+            const screens = new Map();
+
+            const pocket = {
+                html,
+                h,
+                Fragment,
+                useEffect,
+                useRef,
+                useState,
+                Loader: () => html`<span class="muted small">loading…</span>`,
+                Spinner: () => html`<span class="muted small">…</span>`,
+                // The app draws a 24×24 stroked path for the icon that a module names.
+                Icon: ({ path, size }) =>
+                    html`<svg
+                        width=${size ?? 20}
+                        height=${size ?? 20}
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.7"
+                        stroke-linecap="round"
+                    >
+                        <path d=${path} />
+                    </svg>`,
+                conversationId: () => 1,
+                page(config) {
+                    screens.set(`page:${config.id}`, config);
+                },
+                panel(config) {
+                    screens.set(`panel:${config.id}`, config);
+                },
+                rail() {},
+                launcher() {},
+                openPage(id) {
+                    show("page", id);
+                },
+                closePage() {
+                    unmount();
+                },
+                openPanel(id) {
+                    show("panel", id);
+                },
+                closePanel() {
+                    unmount();
+                },
+                onDispose() {},
+                style(path) {
+                    const link = document.createElement("link");
+                    link.rel = "stylesheet";
+                    link.href = "/x/" + path;
+                    document.head.append(link);
+                },
+                api: async (path, body, options = {}) => {
+                    const method = options.method ?? (body === undefined ? "GET" : "POST");
+                    const answer = await fetch("/api/" + path, {
+                        method,
+                        headers: { "content-type": "application/json" },
+                        body: body === undefined ? undefined : JSON.stringify(body),
+                    });
+
+                    if (!answer.ok) {
+                        const said = await answer.json().catch(() => ({}));
+                        throw new Error(said.message ?? String(answer.status));
+                    }
+
+                    return answer.json();
+                },
+                on(event, run) {
+                    const list = listeners.get(event) ?? [];
+                    list.push(run);
+                    listeners.set(event, list);
+
+                    return () => listeners.set(event, (listeners.get(event) ?? []).filter((each) => each !== run));
+                },
+            };
+
+            const events = new EventSource("/events");
+            events.onmessage = ({ data }) => {
+                const { event, data: payload } = JSON.parse(data);
+
+                for (const run of listeners.get(event) ?? []) run(payload);
+            };
+
+            // The app closes a page that asks to close, and opens it again on Control+Backquote; the preview does the
+            // same thing with one element, so that a page that closes and opens again looks like one.
+            const root = document.getElementById("page");
+
+            // The app gives a page or a panel its close; the preview has one element, so every close is that one.
+            const close = () => unmount();
+
+            function show(kind, id) {
+                const screen = screens.get(`${kind}:${id}`);
+
+                root.textContent = "";
+                // Which surface shows: the app draws a panel beside the conversation and a page in its place, and the
+                // preview says which one the module asked for, so that a test can hold the switch to it.
+                root.dataset.surface = kind;
+
+                if (screen === undefined) {
+                    root.textContent = `The preview has no ${kind} called ${id}.`;
+
+                    return;
+                }
+
+                render(h(screen.component, { close }), root);
+            }
+
+            function unmount() {
+                render(null, root);
+                delete root.dataset.surface;
+                root.innerHTML = '<p class="muted small">The page is closed. Control+Backquote opens it again.</p>';
+            }
+
+            setup(pocket);
+
+            const named = new URLSearchParams(location.search);
+            const kind = named.get("panel") === null ? "page" : "panel";
+
+            show(kind, named.get(kind) ?? "terminal");
+        </script>
+    </body>
+</html>

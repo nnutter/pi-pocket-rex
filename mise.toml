@@ -1,0 +1,30 @@
+[tools]
+bun = "latest"
+
+[tasks."ext:install"]
+description = "Copy the extension into ~/.pi-pocket and install its runtime"
+run = "bun run scripts/install.ts"
+
+[tasks.preview]
+description = "Serve the pages against a Rex server of the preview's own, without Pi Pocket"
+run = "bun run scripts/preview.ts"
+
+[tasks.test]
+description = "Run every test: the client, the runner, the module, and the page in a browser"
+run = "bun test"
+
+[tasks."test:fast"]
+description = "Run the tests that need no browser"
+run = "bun run test:fast"
+
+[tasks."gallery-entry"]
+description = "Write docs/gallery-entry.json for HEAD, the commit that a release deploys"
+run = "bun run scripts/gallery-entry.ts"
+
+[tasks.sidecar]
+description = "Write rex.gallery.json beside the installed drop-in, so Menu > Extensions shows its title"
+run = "bun run scripts/sidecar.ts"
+
+[tasks.check]
+description = "Typecheck, and parse the browser module as a browser does"
+run = "bun run check"

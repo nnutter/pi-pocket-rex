@@ -1,0 +1,49 @@
+name: CI
+
+# A pull request, and a push to the branch that it would merge into. Nothing else: a tag is a release, and the release
+# step of this repository is a person running `mise run gallery-entry` on the commit that goes out.
+on:
+  pull_request:
+  push:
+    branches: [master, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Check and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          # The major that this repository develops on. A patch release is taken as it comes.
+          bun-version: 1.4.x
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      # Pi Pocket writes `_pocket.d.ts` beside an installed drop-in, so a checkout has no copy of the extension API's
+      # types and `tsc` cannot resolve the module's import. This is the copy that Pi Pocket publishes for exactly this.
+      - name: Types of Pi Pocket's extension API
+        run: |
+          curl -fsSL https://tannermidd.github.io/pi-pocket/docs/pocket.d.ts -o src/_pocket.d.ts
+          cp src/_pocket.d.ts extensions/_pocket.d.ts
+
+      # Typecheck, and parse every browser module as a browser does: those are plain JavaScript, and nothing else in the
+      # build reads them.
+      - name: Check
+        run: bun run check
+
+      # Everything that needs no browser and no Rex server. The browser tests drive the page in Chromium against a Rex
+      # server, and Rex is not installable without an account, so they run on a machine that has one (see the README).
+      - name: Test
+        run: bun run test:fast

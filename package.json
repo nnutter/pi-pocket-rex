@@ -1,0 +1,23 @@
+{
+    "name": "pi-pocket-rex",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "install-extension": "bun run scripts/install.ts",
+        "test": "bun test",
+        "test:fast": "bun test test/escapes.test.ts test/rex-client.test.ts test/rex-host.test.ts test/hosts.test.ts test/picker.test.ts test/module.test.ts test/module-errors.test.ts test/gallery.test.ts test/web.test.ts",
+        "check": "tsc --noEmit && node --check extensions/rex/index.js && node --check extensions/rex/terminal.js && node --check extensions/rex/picker.js",
+        "typecheck": "tsc --noEmit"
+    },
+    "dependencies": {
+        "libghostty-vt": "^0.6.3"
+    },
+    "devDependencies": {
+        "@types/bun": "^1.4.4",
+        "htm": "^3.1.1",
+        "preact": "^11.1.0",
+        "puppeteer-core": "^25.16.0",
+        "typescript": "^7.0.2",
+        "undici": "^8.12.3"
+    }
+}

@@ -1,0 +1,746 @@
+/*
+ * Rex's page. Every rule is a `gt-` name of the module's own, and the colors are the app's theme tokens,
+ * so the terminal follows the theme's light and dark sides.
+ */
+
+.gt-page {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    height: 100%;
+    min-height: 0;
+
+    /* The terminal's own width, not the window's: a panel beside a conversation is narrow in a wide window. */
+    container-type: inline-size;
+}
+
+.gt-bar {
+    display: flex;
+    align-items: center;
+    /* The shell's own buttons at one end of the bar, the text's size and the end of it at the other. */
+    justify-content: space-between;
+    gap: 0.5rem;
+    flex: none;
+    min-height: 0;
+}
+
+/*
+ * A button's width of air, where a group of buttons says that it is another kind of thing than the group beside it. The
+ * row's own gap sits on either side of it, so the air it adds is a button less two of those gaps.
+ */
+.gt-space {
+    flex: none;
+    width: calc(1.75rem - 0.5rem);
+}
+
+.gt-flash {
+    flex: none;
+    white-space: nowrap;
+    animation: gt-fade 250ms ease-out;
+}
+
+@keyframes gt-fade {
+    from {
+        opacity: 0;
+    }
+}
+
+.gt-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    flex: none;
+}
+
+/*
+ * A button in the bar is a square, whatever it says: a drawing is the whole of what one of them says, so its width is
+ * its height, and the row of them is even. The size is set rather than left to the drawing inside it, which a font or a
+ * zoom level would change a pixel at a time.
+ */
+.gt-actions .button.gt-small {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    padding: 0;
+}
+
+/*
+ * An icon is drawn at the size of the letters beside it, in their color: a button says with a drawing what a word would
+ * say, and every button in the bar is the same size, whichever of the two it says it with.
+ */
+.gt-actions svg {
+    display: block;
+    width: 1em;
+    height: 1em;
+    fill: currentColor;
+}
+
+
+.button.gt-small {
+    padding: 0.25rem 0.5rem;
+    /* One size for every button in the bar: a split's drawing, a letter, and an icon are all this big. */
+    font-size: 1rem;
+    /* One line of a box, so that a button with text and a button with a drawing are one height. */
+    line-height: 1;
+    min-height: 0;
+}
+
+/*
+ * What the terminal has to say about itself: a shell that ended, or a runtime that is not there. It lies over the screen
+ * rather than above it, because a line taken from a screen changes the columns and rows of everything in it.
+ */
+.gt-note {
+    position: absolute;
+    /* Inside the frame's own margin, so that the note is a note on the screen and not on its edge. */
+    left: 9px;
+    right: 9px;
+    bottom: 9px;
+    z-index: 3;
+
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.5rem;
+
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--card) 92%, transparent);
+    backdrop-filter: blur(6px);
+    box-shadow: 0 4px 16px rgb(0 0 0 / 25%);
+}
+
+.gt-view {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+}
+
+/* The screen: a grid of exactly the columns and rows that the pty has, in a monospaced cell. */
+.gt-screen {
+    --gt-font: 13px;
+    --gt-line: 17px;
+
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+
+    /*
+     * JetBrains Mono with Nerd Font's glyphs, which is what an editor's icons are drawn with, and the ligatures that
+     * its arrows and comparisons are drawn as.
+     *
+     * The two fonts that Pi Pocket serves come first, and they are the ones this page was drawn to look like: "Pocket
+     * Mono" is JetBrains Mono, and "Pocket Nerd Symbols" is the Nerd patch's icons alone, in the private use areas and
+     * no further. Every tab of the app has both, so the terminal looks the same on a laptop, a phone, and a machine with
+     * nothing installed -- and a person's own Nerd font is a line away, below, if they want their own glyphs back.
+     *
+     * The proportional builds are not here at all, and the Mono ones lead their group: a grid of cells wants a font
+     * whose every glyph is one cell wide.
+     */
+    font-family:
+        "Pocket Mono", "Pocket Nerd Symbols", "JetBrainsMono Nerd Font Mono", "JetBrainsMono Nerd Font",
+        "JetBrainsMono NF", "JetBrainsMonoNF", "JetBrainsMonoNL Nerd Font", "JetBrains Mono Nerd Font",
+        "JetBrains Mono NF", "JetBrains Mono", "Symbols Nerd Font Mono", "Symbols Nerd Font",
+        ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    font-size: var(--gt-font);
+    line-height: var(--gt-line);
+    /*
+     * A font that has no bold is given one by the browser, which draws it by thickening the letters, and a thickened
+     * letter is wider than the cell that the terminal counted: the run spills into the run after it and the line looks
+     * like words on top of each other. So a weight is never made up. A slant may be: a made-up italic leans the letter
+     * and leaves its width alone.
+     */
+    font-synthesis-weight: none;
+    font-variant-ligatures: common-ligatures contextual;
+    font-feature-settings:
+        "calt" 1,
+        "liga" 1;
+    font-kerning: none;
+    tab-size: 8;
+
+    /*
+     * Room inside the frame: text that begins at the edge of a rounded corner looks cut off by it. A pixel less than the
+     * corner's own radius, on every side, and the columns and rows are counted in what is left.
+     */
+    padding: 9px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--bg);
+    color: var(--text);
+    outline: none;
+}
+
+.gt-screen.gt-typing {
+    border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+}
+
+.gt-screen:focus-within {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.gt-grid {
+    position: relative;
+    white-space: pre;
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+.gt-row {
+    height: var(--gt-line);
+    overflow: hidden;
+    white-space: pre;
+}
+
+.gt-probe {
+    position: absolute;
+    visibility: hidden;
+    white-space: pre;
+    top: 0;
+    left: 0;
+}
+
+.gt-inverse {
+    color: var(--bg);
+    background: var(--text);
+}
+
+.gt-cursor {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: var(--gt-cell-w, 1ch);
+    height: var(--gt-cell-h, var(--gt-line));
+    pointer-events: none;
+    background: color-mix(in srgb, var(--accent) 35%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 70%, transparent);
+    transition: opacity 120ms linear;
+}
+
+/*
+ * The shapes that a program asks for with DECSCUSR: a block in Neovim's normal mode, a bar in insert mode, and an
+ * underline wherever a program wants one.
+ */
+.gt-cursor--bar {
+    width: 2px;
+    background: var(--accent);
+    box-shadow: none;
+}
+
+.gt-cursor--underline {
+    height: 2px;
+    margin-top: calc(var(--gt-cell-h, var(--gt-line)) - 2px);
+    background: var(--accent);
+    box-shadow: none;
+}
+
+/* A program that asks for a blinking cursor gets one, and a person who asked their system for less motion keeps it. */
+.gt-cursor--blink {
+    animation: gt-blink 1.1s steps(1) infinite;
+}
+
+@keyframes gt-blink {
+    50% {
+        opacity: 0;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .gt-cursor--blink {
+        animation: none;
+    }
+}
+
+/*
+ * The textarea that holds the keys: in sight, at the cursor, and invisible.
+ *
+ * A system that owns the keyboard shows it for an input that it can see. One parked off the edge of the page is an
+ * input that a phone will focus and not raise a keyboard for, which is a tap that does nothing until the next one. Its
+ * text is 16px because a smaller one makes a phone zoom the page in when it takes the focus.
+ */
+.gt-input {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    border: 0;
+    margin: 0;
+    resize: none;
+    overflow: hidden;
+
+    font-size: 16px;
+    line-height: 1;
+    color: transparent;
+    background: transparent;
+    caret-color: transparent;
+    opacity: 0.01;
+
+    /* A finger belongs to the screen, which gives the keys to this input; a tap here would be a tap that moves a caret. */
+    pointer-events: none;
+    z-index: 1;
+}
+
+/* A panel that is narrow, in a window that is not, still has to keep its keys and its name. */
+@container (max-width: 620px) {
+    .gt-flash {
+        display: none;
+    }
+
+    .button.gt-small {
+        padding: 0.2rem 0.4rem;
+        font-size: 0.9rem;
+    }
+
+    .gt-bar {
+        gap: 0.25rem;
+    }
+}
+
+/* Narrower than a panel usually is: the text size is a preference, and the shell's own buttons are not. */
+@container (max-width: 460px) {
+    .gt-font {
+        display: none;
+    }
+}
+
+@media (max-width: 699px) {
+    .gt-page {
+        height: 100%;
+    }
+}
+
+/*
+ * The row above a phone's keyboard: the keys that a soft keyboard has not got. It shows only while that keyboard is up,
+ * since with a keyboard of its own, the person has every key already.
+ */
+.gt-keys {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
+    padding: 2px 0 0;
+}
+
+.gt-key {
+    flex: none;
+    min-width: 42px;
+    height: 38px;
+    padding: 0 0.55rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--card);
+    color: var(--text);
+    font: inherit;
+    font-size: 0.85rem;
+    line-height: 1;
+
+    touch-action: manipulation;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+.gt-key:active {
+    background: color-mix(in srgb, var(--accent) 22%, var(--card));
+}
+
+/* A modifier that waits for the next key: it stays lit until that key is pressed. */
+.gt-key-on,
+.gt-key-on:active {
+    background: var(--accent);
+    border-color: transparent;
+    color: var(--bg);
+}
+
+.gt-round {
+    width: 42px;
+    min-width: 42px;
+    height: 42px;
+    padding: 0;
+    border-radius: 999px;
+}
+
+/* The keys scroll sideways, so a narrow phone still has them all, and the first ones are what a shell reaches for. */
+.gt-keyrow {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px;
+
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--card) 70%, transparent);
+
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+}
+
+.gt-keyrow::-webkit-scrollbar {
+    display: none;
+}
+
+/* The words of a note take the room that its buttons leave. */
+.gt-note-said {
+    flex: 1;
+    min-width: 0;
+}
+
+.gt-note-x {
+    padding: 0.2rem 0.45rem;
+}
+
+/*
+ * The box that the screen fills: all of the page below the bar and above the keys' row.
+ */
+.gt-panes {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    display: flex;
+}
+
+@media (max-width: 599px) {
+    /* A phone has no room for a bar of buttons: the shell's own and the end keep theirs, and the text size folds away. */
+    .gt-actions {
+        gap: 2px;
+    }
+
+    .button.gt-small {
+        padding: 0.2rem 0.4rem;
+    }
+}
+
+/* A bell, seen rather than heard: a terminal with its bell turned down still says that something happened. */
+.gt-screen.gt-bell {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/*
+ * The list of every shell. It is a page of its own rather than the panel, so it fills the place of the conversation and
+ * scrolls there: a phone shows one row at a time, and a laptop shows all eight without moving.
+ */
+.gt-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    height: 100%;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 0.25rem;
+    /* A list of lines is read, not scanned across: on a wide window it keeps its width instead of stretching. */
+    width: 100%;
+    max-width: 46rem;
+    margin-inline: auto;
+    box-sizing: border-box;
+}
+
+.gt-list-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    flex: none;
+}
+
+/* The eighth place is taken: the words say what to do about it, in the color of a warning rather than an error. */
+.gt-warn {
+    color: var(--warn);
+}
+
+.gt-list-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+/* A shell's row: a card of the app's own colors, so that a list of them reads as one thing with several parts. */
+.gt-terminal-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    padding: 0.5rem 0.6rem;
+    border: 1px solid var(--line);
+    border-radius: 0.5rem;
+    background: var(--card);
+}
+
+/* A shell that ended keeps its row for a while, so that what it said can still be read: it says so more quietly. */
+.gt-terminal-row.is-ended {
+    opacity: 0.65;
+}
+
+.gt-terminal-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+}
+
+.gt-terminal-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.gt-terminal-tag {
+    flex: none;
+    font-size: 0.75rem;
+    padding: 0.05rem 0.4rem;
+    border: 1px solid var(--line);
+    border-radius: 1rem;
+    color: var(--muted);
+}
+
+/* The folder's path is as long as it is: a narrow row breaks it rather than pushing the buttons out of the card. */
+.gt-terminal-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    overflow-wrap: anywhere;
+}
+
+/* The dot belongs to the part before it, so a part that wraps takes its dot with it rather than leaving one behind. */
+.gt-meta-item:not(:last-child)::after {
+    content: " ·";
+}
+
+.gt-terminal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.4rem;
+}
+
+/*
+ * The sessions page: the machines that a person can reach and the sessions under each, in the form of Rex's own picker.
+ * The filter is the first thing on the page, because a list of every session on every machine is longer than a phone.
+ */
+.gt-filter {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex: none;
+    padding: 0.45rem 0.7rem;
+    border: 1px solid var(--line);
+    border-radius: 0.6rem;
+    background: var(--card);
+    color: var(--muted);
+}
+
+/* The box is the field's look, so the field itself has none: the border is around the glass and the text together. */
+.gt-filter-box {
+    flex: 1;
+    min-width: 0;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-size: 0.95rem;
+}
+
+.gt-filter-box::placeholder {
+    color: var(--muted);
+}
+
+/* A machine, and the sessions under it: one group that reads as one thing. */
+.gt-machine {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+}
+
+.gt-machine-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.15rem 0.2rem;
+    min-width: 0;
+}
+
+.gt-machine-icon {
+    display: inline-flex;
+    flex: none;
+    color: var(--muted);
+}
+
+.gt-machine-name {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.gt-machine-tag {
+    flex: none;
+    font-size: 0.7rem;
+    padding: 0.02rem 0.35rem;
+    border: 1px solid var(--line);
+    border-radius: 1rem;
+    color: var(--muted);
+}
+
+/* The state of a machine belongs at the end of its line, whichever words are before it. */
+.gt-machine-state {
+    margin-left: auto;
+    flex: none;
+    max-width: 45%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.gt-sessions {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    margin: 0;
+    /* Under the machine's name, so that the sessions read as belonging to it. */
+    padding: 0 0 0 1.65rem;
+    list-style: none;
+}
+
+/* A session is a row that opens its terminal, so it is a button that looks like a row: no frame of its own until a
+ * finger or a pointer is on it. */
+.gt-session {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    min-width: 0;
+    padding: 0.45rem 0.55rem;
+    border: 1px solid transparent;
+    border-radius: 0.45rem;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.gt-session:hover,
+.gt-session:focus-visible {
+    background: var(--card);
+    border-color: var(--line);
+}
+
+.gt-session:active {
+    background: color-mix(in srgb, var(--accent) 18%, var(--card));
+}
+
+.gt-session-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.gt-session-line {
+    padding: 0.25rem 0 0.25rem 1.65rem;
+}
+
+/* The row that starts a session, at the foot of the list: apart from the sessions above it, as Rex's picker has it. */
+.gt-picker-foot {
+    flex: none;
+    margin-top: 0.25rem;
+    padding-top: 0.6rem;
+    border-top: 1px solid var(--line);
+}
+
+.gt-new {
+    gap: 0.5rem;
+    font-weight: 600;
+}
+
+.gt-new:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+/* Which Rex session this is, in the bar: it gives way to the buttons, and its own words end in an ellipsis. */
+.gt-where {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: center;
+}
+
+.gt-where-host {
+    opacity: 0.75;
+}
+
+/* The two fields that name a machine, and the buttons that take or leave it: a small card, because a phone has no room
+ * for a row of them. */
+.gt-add {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    padding: 0.55rem;
+    border: 1px solid var(--line);
+    border-radius: 0.5rem;
+    background: var(--card);
+}
+
+.gt-add-name,
+.gt-add-host {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 0.45rem 0.6rem;
+    border: 1px solid var(--line);
+    border-radius: 0.45rem;
+    background: var(--surface, var(--card));
+    color: var(--text);
+    font: inherit;
+}
+
+.gt-add-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.4rem;
+}
+
+/* The tick beside a session that the terminal already shows, and the row for the conversation's own terminal. */
+.gt-session-tick {
+    display: inline-flex;
+    flex: none;
+    width: 1rem;
+    justify-content: center;
+    color: var(--accent);
+}
+
+.gt-session.is-picked {
+    background: color-mix(in srgb, var(--accent) 16%, var(--card));
+    border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+    font-weight: 600;
+}
+
+.gt-own {
+    padding-left: 0;
+    margin-bottom: 0.25rem;
+}
+
+/* Choosing another session stays in the bar at every width: the text size is a preference, and this is not. */
+
+/* An icon of the sessions page: a box of its own so that one drawing never shifts the words beside it. */
+.gt-mark {
+    display: block;
+    flex: none;
+}

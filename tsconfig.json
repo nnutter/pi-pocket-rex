@@ -1,0 +1,18 @@
+{
+    "compilerOptions": {
+        "target": "ES2023",
+        "lib": ["ES2023", "DOM", "DOM.Iterable"],
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "types": ["bun"],
+        "strict": true,
+        "noUncheckedIndexedAccess": true,
+        "allowImportingTsExtensions": true,
+        "noEmit": true,
+        "skipLibCheck": true,
+        "allowJs": true,
+        "checkJs": false,
+        "verbatimModuleSyntax": true
+    },
+    "include": ["src/**/*.ts", "scripts/**/*.ts", "test/**/*.ts", "_pocket.d.ts"]
+}
