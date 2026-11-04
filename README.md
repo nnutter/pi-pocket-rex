@@ -122,8 +122,9 @@ Rex are one program. Rex encodes them with the modes that the running program se
 are what the program asked for. Command belongs to Pi Pocket on an Apple keyboard; Control is the shell's everywhere.
 
 A soft keyboard has no Escape and no Control, so the panel puts a row above it: a round Control, a band of keys that
-scrolls sideways, and a round button that puts the keyboard away. Tapping a modifier arms it for the next key. The row
-waits for a soft keyboard, so with a Bluetooth keyboard there is none.
+scrolls sideways, and a round button that puts the keyboard away. Tapping a modifier arms it for the next key, whether
+that is one of the row's or a letter of the keyboard below. The row waits for a soft keyboard, so with a Bluetooth
+keyboard there is none.
 
 iOS covers the window with its keyboard instead of giving it room, so a screen as tall as the window would keep the line
 being typed behind the keyboard. While the row is up, the page is as tall as the part of the window that the keyboard
