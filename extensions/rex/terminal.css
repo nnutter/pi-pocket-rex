@@ -301,9 +301,15 @@
     }
 }
 
-/* Narrower than a panel usually is: the text size is a preference, and the shell's own buttons are not. */
+/*
+ * Narrower than a panel usually is: the text size is a preference, and the shell's own buttons are not.
+ *
+ * The rule names the row as well as the button, because the bar's own rule for a button is a flex box of one class
+ * more: a button that only this rule named stayed on the screen, and a phone's bar kept two buttons it had no room
+ * for.
+ */
 @container (max-width: 460px) {
-    .gt-font {
+    .gt-actions .button.gt-font {
         display: none;
     }
 }
@@ -414,7 +420,7 @@
 }
 
 @media (max-width: 599px) {
-    /* A phone has no room for a bar of buttons: the shell's own and the end keep theirs, and the text size folds away. */
+    /* A phone has no room for a bar of wide buttons, so they tighten; the text's size folds away in the narrow rule. */
     .gt-actions {
         gap: 2px;
     }

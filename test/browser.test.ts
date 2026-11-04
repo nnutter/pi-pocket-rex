@@ -165,6 +165,24 @@ async function keyboardCovers(page: Page, height: number): Promise<void> {
     await settle(page, 600);
 }
 
+/**
+ * Leaves the shell at a fresh prompt.
+ *
+ * Every page of the preview shows the same conversation's terminal, so a test that pressed a key of the row -- an arrow,
+ * a Tab, an Escape -- can leave the next one with a cursor in the middle of a line or a half-typed command. Ctrl-C is
+ * the line that a person would clear it with.
+ */
+async function freshPrompt(page: Page): Promise<void> {
+    await page.evaluate(() => {
+        const input = document.querySelector(".gt-input") as HTMLTextAreaElement;
+
+        input.focus();
+        input.value = "\u0003";
+        input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    });
+    await settle(page, 350);
+}
+
 /** A finger on an element: a touch, as a phone sends one. */
 async function tap(page: Page, selector: string): Promise<void> {
     const element = await page.$(selector);
@@ -179,20 +197,22 @@ async function tap(page: Page, selector: string): Promise<void> {
     await settle(page);
 }
 
-/** The key of the row whose label is this one. */
+/**
+ * The key of the row whose label is this one, tapped by the element that has that label.
+ *
+ * The row's keys are not siblings: the round Control and the way out stand beside the band that scrolls, so a selector
+ * that counted keys by their place among their siblings found the one after the label that was asked for.
+ */
 async function tapKey(page: Page, label: string): Promise<void> {
     const labels = await page.$$eval(".gt-key", (keys) => keys.map((key) => key.textContent?.trim() ?? ""));
     const at = labels.indexOf(label);
 
     if (at < 0) throw new Error(`No key ${label} in the row: ${labels.join(" ")}`);
 
-    await tap(page, `.gt-key:nth-of-type(${at + 1})`).catch(async () => {
-        // The row's keys are not all direct children of one element: tap by index of the whole set.
-        const keys = await page.$$(".gt-key");
+    const keys = await page.$$(".gt-key");
 
-        await keys[at]!.tap();
-        await settle(page);
-    });
+    await keys[at]!.tap();
+    await settle(page);
 }
 
 /**
@@ -431,6 +451,8 @@ describe("Control and the keys of the row", () => {
             expect(await rowShown(page)).toBe(true);
             expect(await armed(page)).toBe(true);
             expect(await focusedThing(page)).toBe("gt-input");
+
+            await freshPrompt(page);
         } finally {
             await page.close();
         }
@@ -466,6 +488,8 @@ describe("Control and the keys of the row", () => {
             expect(sent).toHaveLength(1);
             expect(sent[0]).toMatchObject({ keys: [{ key: "KeyA", mods: { ctrl: true } }] });
             expect(await armed(page)).toBe(false);
+
+            await freshPrompt(page);
         } finally {
             await page.close();
         }
@@ -482,6 +506,9 @@ describe("Control and the keys of the row", () => {
 
                 expect(await focusedThing(page)).toBe("gt-input");
             }
+
+            // The keys went to the shell as well as to the row: a line of the shell's own is left half typed by them.
+            await freshPrompt(page);
         } finally {
             await page.close();
         }
@@ -955,6 +982,239 @@ describe("the width of a run", () => {
     }, 30_000);
 });
 
+describe("typing into the terminal", () => {
+    /**
+     * A phone's keyboard gives one character at a time, and so does a person at a fast one. Each character was a request
+     * of its own, and requests that are all on their way at once are answered in whatever order the server reaches them:
+     * a line typed quickly came out as `pritfn`, and characters of it were never seen by the shell at all.
+     */
+    test("keeps a line that is typed quickly, whole and in order", async () => {
+        const page = await openPanel();
+
+        try {
+            await page.evaluate(() => {
+                const input = document.querySelector(".gt-input") as HTMLTextAreaElement;
+
+                input.focus();
+
+                // One character a time, as a keyboard sends them, with no pause between: the burst that lost them.
+                for (const char of "echo keptcharacters") {
+                    input.value = char;
+                    input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+                }
+            });
+            // The line is whole before the test lets the page go: a page that closes with characters still on their way
+            // pours them into whichever page a test opens next, since every page shows the same terminal.
+            await page.waitForFunction(
+                () =>
+                    [...document.querySelectorAll(".gt-row")].some((row) =>
+                        (row.textContent ?? "").includes("echo keptcharacters"),
+                    ),
+                { timeout: 15_000 },
+            );
+
+            const echoed = await page.evaluate(
+                () =>
+                    [...document.querySelectorAll(".gt-row")]
+                        .map((row) => row.textContent ?? "")
+                        .find((text) => text.includes("echo")) ?? "",
+            );
+
+            expect(echoed).toContain("echo keptcharacters");
+        } finally {
+            await page.close();
+        }
+    }, 30_000);
+});
+
+describe("the keyboard of a phone", () => {
+    /**
+     * A soft keyboard's backspace deletes a character of the field that the keys go through, and a field that is empty
+     * after every keystroke has nothing to delete: the delete was no event at all, and holding the key repeated nothing.
+     * The field keeps one invisible character for it to take, and each take is a backspace.
+     */
+    test("repeats a backspace that a soft keyboard holds", async () => {
+        const page = await openPhone();
+
+        try {
+            /** Whether the line on the screen holds the letters that were typed for this test, and nothing else took them. */
+            const shown = (letters: string) =>
+                page.evaluate(
+                    (wanted) =>
+                        [...document.querySelectorAll(".gt-row")].some((row) => (row.textContent ?? "").includes(wanted)),
+                    letters,
+                );
+
+            const softKey = (value: string) =>
+                page.evaluate((typed) => {
+                    const input = document.querySelector(".gt-input") as HTMLTextAreaElement;
+
+                    input.focus();
+                    input.value = typed;
+                    input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
+                }, value);
+
+            await softKey("kjqx");
+            await page.waitForFunction(
+                () => [...document.querySelectorAll(".gt-row")].some((row) => (row.textContent ?? "").includes("kjqx")),
+                { timeout: 15_000 },
+            );
+
+            // Three deletes, as a held key sends them: each one takes the character that the field keeps.
+            for (let each = 0; each < 4; each += 1) {
+                await softKey("");
+                await settle(page, 350);
+            }
+
+            expect(await shown("kjqx")).toBe(false);
+        } finally {
+            await page.close();
+        }
+    }, 30_000);
+
+    /**
+     * A phone has no wheel, and the scrollback is the only way back to what a program printed before: a finger moves the
+     * view. Typing is looking for the prompt, so the view comes back to it -- a view that stays scrolled back types on a
+     * line that a person cannot see.
+     */
+    test("moves through the scrollback under a finger, and comes back to the prompt on a key", async () => {
+        const page = await openPhone();
+
+        try {
+            const first = () =>
+                page.evaluate(
+                    () =>
+                        [...document.querySelectorAll(".gt-row")]
+                            .map((row) => row.textContent?.trim() ?? "")
+                            .filter((text) => text !== "")[0] ?? "",
+                );
+
+            await page.evaluate(() => {
+                const input = document.querySelector(".gt-input") as HTMLTextAreaElement;
+
+                input.focus();
+                input.value = "clear; seq 1 80\n";
+                input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+            });
+            await page.waitForFunction(
+                () =>
+                    Number(
+                        [...document.querySelectorAll(".gt-row")]
+                            .map((row) => row.textContent?.trim() ?? "")
+                            .filter((text) => text !== "")[0],
+                    ) > 1,
+                { timeout: 15_000 },
+            );
+
+            const atBottom = await first();
+
+            // A finger that travels down the screen brings the lines that are above the prompt into sight.
+            await page.touchscreen.touchStart(200, 260);
+            for (let y = 280; y <= 520; y += 20) await page.touchscreen.touchMove(200, y);
+            await page.touchscreen.touchEnd();
+            await settle(page, 1200);
+
+            const scrolled = await first();
+
+            expect(Number(scrolled)).toBeLessThan(Number(atBottom));
+
+            // The keys come back to the prompt, and the line that they are typed on is on the screen.
+            await page.evaluate(() => {
+                const input = document.querySelector(".gt-input") as HTMLTextAreaElement;
+
+                input.focus();
+                input.value = "x";
+                input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+            });
+            await settle(page, 1200);
+
+            expect(Number(await first())).toBeGreaterThan(Number(scrolled));
+        } finally {
+            await page.close();
+        }
+    }, 30_000);
+});
+
+describe("the row's modifiers", () => {
+    /** A command in the shell, as a person types it: the soft keyboard's own way, which is text and not a key. */
+    const softType = (page: Page, typed: string) =>
+        page.evaluate((text) => {
+            const input = document.querySelector(".gt-input") as HTMLTextAreaElement;
+
+            input.focus();
+            input.value = text;
+            input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+        }, typed);
+
+    /**
+     * The row's Control, Shift, and Alt arm the next key, and the key that a phone has for a letter is the soft keyboard
+     * below the row: it gives the letter as text, never as a key event, so the armed modifier was dropped and ⌃ then `c`
+     * sent a plain `c` -- the interrupt that a phone has no other way to send.
+     */
+    test("go with the letters that the soft keyboard types", async () => {
+        const page = await openPhone();
+
+        try {
+            await keyboardUp(page);
+            await freshPrompt(page);
+
+            // The bytes that reach the shell, in hex: each armed modifier and then a letter.
+            await softType(page, "od -An -tx1\n");
+            await settle(page, 900);
+
+            for (const [modifier, letter] of [["⌃", "g"], ["⇧", "a"], ["⌥", "b"]] as const) {
+                await tapKey(page, modifier);
+                await softType(page, letter);
+                await settle(page, 350);
+            }
+
+            // The first ^D flushes what od has, and the next one, on a line of its own, is the end of its input.
+            await softType(page, "\u0004\u0004");
+            await settle(page, 1500);
+
+            const bytes = await page.evaluate(() =>
+                [...document.querySelectorAll(".gt-row")]
+                    .map((row) => row.textContent ?? "")
+                    .join(" ")
+                    .replace(/\s+/g, " "),
+            );
+
+            // ^G is Control and g, 41 is the shifted letter, and 1b 62 is Alt and b, which a terminal reads as a meta key.
+            expect(bytes).toContain("07 41 1b 62");
+        } finally {
+            await page.close();
+        }
+    }, 30_000);
+});
+
+describe("the bar's buttons", () => {
+    /** How many of the buttons that a selector names the browser draws. */
+    const drawn = (page: Page, selector: string) =>
+        page.$$eval(selector, (buttons) => buttons.filter((button) => getComputedStyle(button).display !== "none").length);
+
+    /**
+     * A phone's panel has no room for six buttons: the shell's own, the way out, and the end keep theirs, and the text's
+     * size waits until the panel is wide enough for it. The rule that folds them away named the button alone, and the
+     * bar's own rule for a button is a class stronger, so a phone drew all six and squeezed the session's name to a
+     * hundred pixels.
+     */
+    test("folds the text's size away in a narrow panel, and keeps it in a wide one", async () => {
+        const phone = await openPhone();
+        const wide = await openPanel();
+
+        try {
+            expect(await drawn(phone, ".gt-font")).toBe(0);
+            expect(await drawn(phone, ".gt-restart")).toBe(1);
+            expect(await drawn(phone, ".gt-end")).toBe(1);
+
+            expect(await drawn(wide, ".gt-font")).toBe(2);
+        } finally {
+            await phone.close();
+            await wide.close();
+        }
+    }, 30_000);
+});
+
 describe("the surface it shows on", () => {
     test("says which surface a tap gives, and moves the shell there", async () => {
         const page = await openPanel();
@@ -1059,8 +1319,14 @@ describe("how a shell's end is read", () => {
             await page.waitForSelector(".gt-note-said", { timeout: 15_000 });
 
             expect(await page.$eval(".gt-note-said", (note) => note.textContent)).toBe("The shell was stopped.");
-            // The note is over the screen that the shell left, and the panel is still there to read it in.
+
+            // A shell that a person leaves takes its panel with it a moment later. This one stays, and the wait is longer
+            // than that moment: the note is there to read, and a check a moment after it appeared saw a panel that the
+            // timer had not yet taken.
+            await settle(page, 900);
+
             expect(await page.$(".gt-panes")).not.toBeNull();
+            expect(await page.$eval(".gt-note-said", (note) => note.textContent)).toBe("The shell was stopped.");
         } finally {
             await page.close();
         }
