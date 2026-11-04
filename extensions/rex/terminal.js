@@ -15,6 +15,17 @@ const INVERSE = 128;
 const INVISIBLE = 256;
 
 /**
+ * How much of a box is in sight: the box, and the part of the window that a keyboard leaves.
+ *
+ * A phone's keyboard does not change the window -- it covers the lower part of it -- so a box that runs to the bottom of
+ * the window reaches below what a person can see. The visual viewport is the part that is left, and a box that is as
+ * tall as the two share keeps its last line above the keyboard, where the line being typed can be read.
+ */
+export function visibleHeight({ top, bottom }, { top: viewTop, height: viewHeight }) {
+    return Math.max(0, Math.min(bottom, viewTop + viewHeight) - Math.max(top, viewTop));
+}
+
+/**
  * The height of the window with no keyboard over it.
  *
  * A window that got shorter lost that height to a keyboard, and a moment without the keys -- a finger on a button, a
