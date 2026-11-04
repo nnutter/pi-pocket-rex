@@ -4,7 +4,7 @@
  *
  * The runner is the real one, with `libghostty-vt` in this repository, so a frame here is the frame a page draws.
  */
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import createRex, { rexKeyName, rexKeyOf } from "../extensions/rex.ts";
@@ -399,4 +399,102 @@ test("starts another shell where this one is when the bar asks for a new one", a
 
     expect(server.requests.map((each) => each.method)).toContain("session.create");
     expect(second.terminal.session).not.toBe(first.terminal.session);
+});
+
+/**
+ * The last tab of the app: the shells that it watched are the ones that no tab is watching any more.
+ *
+ * Rex keeps a session that has lost its last block, so a shell that outlives the page that opened it keeps a session in
+ * Rex that nothing will ever close. A tab says that it is here, and says goodbye when it goes, and the module ends what
+ * the last one left after a moment that a reload's hello can still take back.
+ */
+describe("the tabs of the app", () => {
+    /** The module's grace for a tab that comes back, which these tests wait out: it is the promise that they hold. */
+    const GRACE = 10_000;
+
+    const said = (fake: FakeWeb, path: string, body: Record<string, unknown> = {}) =>
+        fake.call({ method: "POST", path, body });
+
+    /** Waits for a call that the module makes on its own, after the grace that it keeps. */
+    async function until(server: FakeRex, method: string, timeoutMs = GRACE + 5_000): Promise<void> {
+        const deadline = Date.now() + timeoutMs;
+
+        while (!methods(server).includes(method)) {
+            if (Date.now() > deadline) throw new Error(`The module never called ${method}`);
+
+            await Bun.sleep(50);
+        }
+    }
+
+    test(
+        "ends the blocks of the last tab that goes, and the sessions that they leave empty",
+        async () => {
+            // Two machines: one session holds only the block that this module opened, and one holds a block that a
+            // person started in Rex beside it.
+            const alone = serve();
+            const shared = serve({
+                blocks: [
+                    { block_id: "block:1", creator_name: "com.superlogical.terminal" },
+                    { block_id: "block:9", creator_name: "com.superlogical.editor" },
+                ],
+            });
+            const mine = module(alone);
+            const theirs = module(shared);
+
+            await open(mine, alone);
+            await open(theirs, shared);
+
+            alone.requests.length = 0;
+            shared.requests.length = 0;
+
+            await said(mine, "tabs", { tab: "laptop" });
+            await said(mine, "tabs/gone", { tab: "laptop" });
+
+            // The page reloads: its hello comes a moment after its goodbye, and the shells are not the price of a
+            // reload.
+            await said(mine, "tabs", { tab: "laptop" });
+            await Bun.sleep(GRACE + 300);
+
+            expect(methods(alone)).not.toContain("block.close");
+
+            await said(mine, "tabs/gone", { tab: "laptop" });
+            await said(theirs, "tabs", { tab: "phone" });
+            await said(theirs, "tabs/gone", { tab: "phone" });
+
+            await until(alone, "session.destroy");
+            await until(shared, "block.close");
+
+            // The block closes first: the session is only empty after that, and destroying it earlier would close the
+            // blocks of another program too.
+            expect(methods(alone)).toContain("block.close");
+            expect(methods(alone).indexOf("block.close")).toBeLessThan(methods(alone).indexOf("session.destroy"));
+            expect(alone.requests.find((each) => each.method === "session.destroy")).toMatchObject({
+                payload: { session_id: "session:1" },
+            });
+
+            // The session that another block still lives in stays, and the block that this module opened closes.
+            await Bun.sleep(300);
+
+            expect(methods(shared)).toContain("block.close");
+            expect(methods(shared)).not.toContain("session.destroy");
+        },
+        GRACE + 30_000,
+    );
+
+    test("keeps the shells while a tab is here, whatever the others do", async () => {
+        const server = serve();
+        const fake = module(server);
+
+        await open(fake, server);
+        server.requests.length = 0;
+
+        await said(fake, "tabs", { tab: "laptop" });
+        await said(fake, "tabs", { tab: "phone" });
+        await said(fake, "tabs/gone", { tab: "phone" });
+
+        // The tab that is left is enough: nothing waits to end what it is watching.
+        await Bun.sleep(300);
+
+        expect(methods(server)).not.toContain("block.close");
+    }, 30_000);
 });

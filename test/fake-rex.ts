@@ -170,10 +170,28 @@ export function fakeRex(options: FakeRexOptions = {}): FakeRex {
         return bytes;
     }
 
+    /** The blocks that closed, and the sessions that went: a list after them is a list without them. */
+    const closed = new Set<string>();
+    const gone = new Set<string>();
+
     function resolve(method: string, payload: unknown): unknown {
         if (options.answer !== undefined) return options.answer(method, payload);
 
-        if (method === "session.list") return { sessions: [...(options.sessions ?? []), ...made] };
+        if (method === "session.list") {
+            return { sessions: [...(options.sessions ?? []), ...made].filter((each) => !gone.has(each.session_id)) };
+        }
+        if (method === "block.close") {
+            const asked = payload as { block_id?: string };
+
+            closed.add(asked.block_id ?? "");
+
+            return { block_id: asked.block_id, revision: 1 };
+        }
+        if (method === "session.destroy") {
+            gone.add((payload as { session_id?: string }).session_id ?? "");
+
+            return {};
+        }
         if (method === "session.create") {
             const asked = payload as { label?: string };
             const created: FakeSession = { session_id: `session:made-${made.length + 1}`, label: asked.label ?? "made" };
@@ -186,12 +204,13 @@ export function fakeRex(options: FakeRexOptions = {}): FakeRex {
         if (method === "data.connect") return { ticket: Buffer.alloc(16, 9).toString("base64url"), expires_in_ms: 60_000 };
         if (method === "session.list_blocks") {
             const asked = payload as { session_id?: string };
+            const kept = <T extends { block_id: string }>(blocks: T[]) => blocks.filter((each) => !closed.has(each.block_id));
 
             if (made.some((each) => each.session_id === asked.session_id)) {
-                return { blocks: [{ block_id: "block:made", creator_name: "com.superlogical.terminal" }] };
+                return { blocks: kept([{ block_id: "block:made", creator_name: "com.superlogical.terminal" }]) };
             }
 
-            return { blocks: options.blocks ?? [] };
+            return { blocks: kept(options.blocks ?? []) };
         }
         if (method === "session.new_window") return { window_id: "window:made", block_ids: ["block:made"], revision: 1 };
         if (method === "com.superlogical.terminal.format") return { content: options.screen ?? "" };
