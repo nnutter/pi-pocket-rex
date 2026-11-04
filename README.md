@@ -126,6 +126,9 @@ scrolls sideways, and a round button that puts the keyboard away. Tapping a modi
 that is one of the row's or a letter of the keyboard below. The row waits for a soft keyboard, so with a Bluetooth
 keyboard there is none.
 
+A wheel, or a finger that travels down the screen, moves the view through the scrollback. Typing brings it back to the
+prompt, since the line that a person types must be the line that they can see.
+
 iOS covers the window with its keyboard instead of giving it room, so a screen as tall as the window would keep the line
 being typed behind the keyboard. While the row is up, the page is as tall as the part of the window that the keyboard
 leaves, and the shell gets the rows that fit there.

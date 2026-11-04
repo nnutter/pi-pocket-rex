@@ -1003,7 +1003,15 @@ describe("typing into the terminal", () => {
                     input.dispatchEvent(new InputEvent("input", { bubbles: true }));
                 }
             });
-            await settle(page, 1500);
+            // The line is whole before the test lets the page go: a page that closes with characters still on their way
+            // pours them into whichever page a test opens next, since every page shows the same terminal.
+            await page.waitForFunction(
+                () =>
+                    [...document.querySelectorAll(".gt-row")].some((row) =>
+                        (row.textContent ?? "").includes("echo keptcharacters"),
+                    ),
+                { timeout: 15_000 },
+            );
 
             const echoed = await page.evaluate(
                 () =>
@@ -1013,6 +1021,114 @@ describe("typing into the terminal", () => {
             );
 
             expect(echoed).toContain("echo keptcharacters");
+        } finally {
+            await page.close();
+        }
+    }, 30_000);
+});
+
+describe("the keyboard of a phone", () => {
+    /**
+     * A soft keyboard's backspace deletes a character of the field that the keys go through, and a field that is empty
+     * after every keystroke has nothing to delete: the delete was no event at all, and holding the key repeated nothing.
+     * The field keeps one invisible character for it to take, and each take is a backspace.
+     */
+    test("repeats a backspace that a soft keyboard holds", async () => {
+        const page = await openPhone();
+
+        try {
+            /** Whether the line on the screen holds the letters that were typed for this test, and nothing else took them. */
+            const shown = (letters: string) =>
+                page.evaluate(
+                    (wanted) =>
+                        [...document.querySelectorAll(".gt-row")].some((row) => (row.textContent ?? "").includes(wanted)),
+                    letters,
+                );
+
+            const softKey = (value: string) =>
+                page.evaluate((typed) => {
+                    const input = document.querySelector(".gt-input") as HTMLTextAreaElement;
+
+                    input.focus();
+                    input.value = typed;
+                    input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
+                }, value);
+
+            await softKey("kjqx");
+            await page.waitForFunction(
+                () => [...document.querySelectorAll(".gt-row")].some((row) => (row.textContent ?? "").includes("kjqx")),
+                { timeout: 15_000 },
+            );
+
+            // Three deletes, as a held key sends them: each one takes the character that the field keeps.
+            for (let each = 0; each < 4; each += 1) {
+                await softKey("");
+                await settle(page, 350);
+            }
+
+            expect(await shown("kjqx")).toBe(false);
+        } finally {
+            await page.close();
+        }
+    }, 30_000);
+
+    /**
+     * A phone has no wheel, and the scrollback is the only way back to what a program printed before: a finger moves the
+     * view. Typing is looking for the prompt, so the view comes back to it -- a view that stays scrolled back types on a
+     * line that a person cannot see.
+     */
+    test("moves through the scrollback under a finger, and comes back to the prompt on a key", async () => {
+        const page = await openPhone();
+
+        try {
+            const first = () =>
+                page.evaluate(
+                    () =>
+                        [...document.querySelectorAll(".gt-row")]
+                            .map((row) => row.textContent?.trim() ?? "")
+                            .filter((text) => text !== "")[0] ?? "",
+                );
+
+            await page.evaluate(() => {
+                const input = document.querySelector(".gt-input") as HTMLTextAreaElement;
+
+                input.focus();
+                input.value = "clear; seq 1 80\n";
+                input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+            });
+            await page.waitForFunction(
+                () =>
+                    Number(
+                        [...document.querySelectorAll(".gt-row")]
+                            .map((row) => row.textContent?.trim() ?? "")
+                            .filter((text) => text !== "")[0],
+                    ) > 1,
+                { timeout: 15_000 },
+            );
+
+            const atBottom = await first();
+
+            // A finger that travels down the screen brings the lines that are above the prompt into sight.
+            await page.touchscreen.touchStart(200, 260);
+            for (let y = 280; y <= 520; y += 20) await page.touchscreen.touchMove(200, y);
+            await page.touchscreen.touchEnd();
+            await settle(page, 1200);
+
+            const scrolled = await first();
+
+            expect(Number(scrolled)).toBeLessThan(Number(atBottom));
+
+            // The keys come back to the prompt, and the line that they are typed on is on the screen.
+            await page.evaluate(() => {
+                const input = document.querySelector(".gt-input") as HTMLTextAreaElement;
+
+                input.focus();
+                input.value = "x";
+                input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+            });
+            await settle(page, 1200);
+
+            expect(Number(await first())).toBeGreaterThan(Number(scrolled));
         } finally {
             await page.close();
         }

@@ -101,6 +101,15 @@ const KEYS_SENT_AS_KEYS = new Set([
     "F12",
 ]);
 
+/**
+ * The character that the hidden field keeps, so that a soft keyboard's backspace has something to delete.
+ *
+ * A delete on an empty field is no event at all: the field is emptied after every keystroke, so the delete key did
+ * nothing and holding it repeated nothing. The field holds this one invisible character instead, and a delete that takes
+ * it is the backspace that the program asked for.
+ */
+const KEEPER = "\u200b";
+
 /** What takes a key for itself: a field of the app's own, which the terminal must not take the key from. */
 const EDITABLE = "input, textarea, select, [contenteditable=''], [contenteditable='true'], [role='textbox']";
 
@@ -222,7 +231,12 @@ export class TerminalView {
     #scrollTimer = null;
     #flashTimer = null;
     #bellTimer = null;
-    #wheel = 0;
+    /** The distance that a wheel or a finger has moved, less than a line of it. */
+    #scrollPixels = 0;
+    /** When a finger last moved the view: a tap and a selection belong to a finger that stayed. */
+    #pannedAt = 0;
+    /** How far back this page has moved the view, in lines: Rex reports the length of the scrollback, not the place. */
+    #scrolled = 0;
     #pendingScroll = 0;
     /** What has not been sent to the terminal yet, oldest first. */
     #waiting = [];
@@ -279,6 +293,7 @@ export class TerminalView {
         input.setAttribute("autocorrect", "off");
         input.setAttribute("spellcheck", "false");
         input.setAttribute("aria-label", "Terminal keys");
+        input.value = KEEPER;
         screen.append(input);
 
         this.#container.append(screen);
@@ -376,13 +391,24 @@ export class TerminalView {
 
         const focus = () => {
             this.#place();
+
+            // A field that a browser emptied -- a selection, an autofill -- asks for the keeper back before it takes the
+            // keys, so that the next delete is a backspace rather than nothing.
+            if (input.value === "") {
+                input.value = KEEPER;
+                input.setSelectionRange(KEEPER.length, KEEPER.length);
+            }
+
             input.focus({ preventScroll: true });
         };
 
         // A tap or a click gives the keys to the terminal, unless the person dragged to select text. Both a pointer's
         // end and a click ask for them: a phone answers one of them with a keyboard.
+        // A finger that moved the view is not a finger that meant the keys, or the line under it.
+        const panned = () => Date.now() - this.#pannedAt < 400;
+
         const tap = () => {
-            if (globalThis.getSelection()?.toString()) return;
+            if (panned() || globalThis.getSelection()?.toString()) return;
 
             focus();
         };
@@ -395,7 +421,7 @@ export class TerminalView {
             const selection = globalThis.getSelection();
 
             // Only the screen's own text: a selection in the message box beside it belongs to the person's next command.
-            if (selection === null || selection.rangeCount === 0 || !screen.contains(selection.anchorNode)) return;
+            if (panned() || selection === null || selection.rangeCount === 0 || !screen.contains(selection.anchorNode)) return;
 
             const text = selection.toString();
 
@@ -406,15 +432,35 @@ export class TerminalView {
         screen.addEventListener("click", tap);
         screen.addEventListener("wheel", (event) => {
             event.preventDefault();
+            this.#pan(event.deltaY);
+        }, { passive: false });
 
-            this.#wheel += event.deltaY;
+        // A finger on the screen moves the view through the scrollback, as a wheel does: a phone has no wheel, and the
+        // buffer is the only way back to what a program printed before. A finger that stays is a tap, and a tap gives
+        // the keys, so only a finger that travels moves the view.
+        let from = 0;
+        let moving = false;
 
-            const lines = Math.trunc(this.#wheel / this.#cell.height);
+        screen.addEventListener("touchstart", (event) => {
+            if (event.touches.length !== 1) return;
 
-            if (lines === 0) return;
+            from = event.touches[0].clientY;
+            moving = false;
+        }, { passive: true });
 
-            this.#wheel -= lines * this.#cell.height;
-            this.#scroll(lines);
+        screen.addEventListener("touchmove", (event) => {
+            if (event.touches.length !== 1) return;
+
+            const to = event.touches[0].clientY;
+
+            if (!moving && Math.abs(to - from) < 8) return;
+
+            moving = true;
+            this.#pannedAt = Date.now();
+
+            event.preventDefault();
+            this.#pan(from - to);
+            from = to;
         }, { passive: false });
 
         input.addEventListener("keydown", (event) => this.#keys(event, true));
@@ -436,10 +482,26 @@ export class TerminalView {
         window.addEventListener("keydown", loose);
         this.#stops.push(() => window.removeEventListener("keydown", loose));
 
-        input.addEventListener("input", () => {
-            const text = input.value;
+        input.addEventListener("input", (event) => {
+            const value = input.value;
 
-            input.value = "";
+            // The keeper goes back in after every event, at the end, where the next character goes. A value without it
+            // is a delete that took it: that is a backspace, and holding the key takes it again and again.
+            const kept = value.startsWith(KEEPER);
+            const text = kept ? value.slice(KEEPER.length) : value;
+
+            input.value = KEEPER;
+            input.setSelectionRange(KEEPER.length, KEEPER.length);
+
+            if (!kept && text === "" && event.isComposing !== true) {
+                const armed = this.#armedNow();
+
+                this.#send({ keys: [{ key: "Backspace", mods: armed ?? {} }] });
+
+                if (armed !== null) this.#disarm();
+
+                return;
+            }
 
             if (text === "") return;
 
@@ -770,9 +832,23 @@ export class TerminalView {
         }, 250);
     }
 
+    /** Moves the view by a distance that a wheel or a finger made: whole lines of it, and the rest kept for the next. */
+    #pan(pixels) {
+        this.#scrollPixels += pixels;
+
+        const lines = Math.trunc(this.#scrollPixels / this.#cell.height);
+
+        if (lines === 0) return;
+
+        this.#scrollPixels -= lines * this.#cell.height;
+        this.#scroll(lines);
+    }
+
     /** Moves the view back through the scrollback: the lines of a wheel's turn, taken together, one call each 40 ms. */
     #scroll(lines) {
         if (this.#id === null || this.#destroyed) return;
+
+        this.#scrolled = Math.max(0, this.#scrolled - lines);
 
         this.#pendingScroll += lines;
         clearTimeout(this.#scrollTimer);
@@ -785,6 +861,15 @@ export class TerminalView {
         }, 40);
     }
 
+    /** Puts the view back at the prompt, where the next line will be. */
+    #toBottom() {
+        this.#scrolled = 0;
+        this.#pendingScroll = 0;
+        clearTimeout(this.#scrollTimer);
+
+        this.#pocket.api(`terminals/${this.#id}/scroll`, { to: "bottom" }).catch(() => {});
+    }
+
     /**
      * Sends one thing to the terminal, after everything that came before it.
      *
@@ -794,6 +879,10 @@ export class TerminalView {
      */
     #send(body) {
         if (this.#id === null || this.#destroyed) return;
+
+        // A person who types is looking for the prompt, and a view that is scrolled back shows the lines above it: what
+        // is typed would go to a line that is not on the screen.
+        if (this.#scrolled > 0) this.#toBottom();
 
         const last = this.#waiting.at(-1);
 
