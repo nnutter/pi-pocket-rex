@@ -150,6 +150,20 @@ function paint(span, run) {
     if (span.classList.contains("gt-inverse") !== swapped) span.classList.toggle("gt-inverse", swapped);
 }
 
+/**
+ * The key that a character types, as a keyboard names it, or null for a character that has no key of its own.
+ *
+ * Ctrl+C and Alt+B are the row's modifiers on a letter, and a letter that a soft keyboard gives is text, not a key: its
+ * name is what the encoder reads the modifier with. A character that is not a letter or a digit keeps its own way -- the
+ * row has keys for the punctuation that a phone hides, and its modifiers go with those.
+ */
+function keyOfText(char) {
+    if (/^[a-z]$/i.test(char)) return `Key${char.toUpperCase()}`;
+    if (/^[0-9]$/.test(char)) return `Digit${char}`;
+
+    return null;
+}
+
 /** A keydown as the key event that `libghostty-vt`'s encoder reads, or null for a key it does not know. */
 function keyEventOf(event) {
     if (event.isComposing || event.key === "Dead" || event.key === "Process" || event.code === "") return null;
@@ -427,7 +441,25 @@ export class TerminalView {
 
             input.value = "";
 
-            if (text !== "") this.#send({ text });
+            if (text === "") return;
+
+            // A soft keyboard gives a character as text, never as a key: Control and `c` is the interrupt that a phone has
+            // no other way to send, and a modifier that the row armed would be lost if the text went as it is.
+            const armed = this.#armedNow();
+            const key = text.length === 1 ? keyOfText(text) : null;
+
+            if (armed !== null && key !== null) {
+                // A shifted letter is the capital that the modifier asks for; a phone's own keyboard has already done
+                // that for what it sends, and this is the row's Shift beside it.
+                const utf8 = armed.shift === true ? text.toUpperCase() : text;
+
+                this.#send({ keys: [{ key, mods: armed, utf8 }] });
+                this.#disarm();
+
+                return;
+            }
+
+            this.#send({ text });
         });
 
         input.addEventListener("paste", (event) => {

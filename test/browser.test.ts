@@ -200,6 +200,24 @@ async function openWithTabLog(): Promise<Page> {
 const tabSaid = (page: Page) =>
     page.evaluate(() => (window as unknown as { said: Array<{ url: string; body: string }> }).said ?? []);
 
+/**
+ * Leaves the shell at a fresh prompt.
+ *
+ * Every page of the preview shows the same conversation's terminal, so a test that pressed a key of the row -- an arrow,
+ * a Tab, an Escape -- can leave the next one with a cursor in the middle of a line or a half-typed command. Ctrl-C is
+ * the line that a person would clear it with.
+ */
+async function freshPrompt(page: Page): Promise<void> {
+    await page.evaluate(() => {
+        const input = document.querySelector(".gt-input") as HTMLTextAreaElement;
+
+        input.focus();
+        input.value = "\u0003";
+        input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    });
+    await settle(page, 350);
+}
+
 /** A finger on an element: a touch, as a phone sends one. */
 async function tap(page: Page, selector: string): Promise<void> {
     const element = await page.$(selector);
@@ -214,20 +232,22 @@ async function tap(page: Page, selector: string): Promise<void> {
     await settle(page);
 }
 
-/** The key of the row whose label is this one. */
+/**
+ * The key of the row whose label is this one, tapped by the element that has that label.
+ *
+ * The row's keys are not siblings: the round Control and the way out stand beside the band that scrolls, so a selector
+ * that counted keys by their place among their siblings found the one after the label that was asked for.
+ */
 async function tapKey(page: Page, label: string): Promise<void> {
     const labels = await page.$$eval(".gt-key", (keys) => keys.map((key) => key.textContent?.trim() ?? ""));
     const at = labels.indexOf(label);
 
     if (at < 0) throw new Error(`No key ${label} in the row: ${labels.join(" ")}`);
 
-    await tap(page, `.gt-key:nth-of-type(${at + 1})`).catch(async () => {
-        // The row's keys are not all direct children of one element: tap by index of the whole set.
-        const keys = await page.$$(".gt-key");
+    const keys = await page.$$(".gt-key");
 
-        await keys[at]!.tap();
-        await settle(page);
-    });
+    await keys[at]!.tap();
+    await settle(page);
 }
 
 const rowShown = (page: Page) => page.$(".gt-keys").then((found) => found !== null);
@@ -431,6 +451,8 @@ describe("Control and the keys of the row", () => {
             expect(await rowShown(page)).toBe(true);
             expect(await armed(page)).toBe(true);
             expect(await focusedThing(page)).toBe("gt-input");
+
+            await freshPrompt(page);
         } finally {
             await page.close();
         }
@@ -466,6 +488,8 @@ describe("Control and the keys of the row", () => {
             expect(sent).toHaveLength(1);
             expect(sent[0]).toMatchObject({ keys: [{ key: "KeyA", mods: { ctrl: true } }] });
             expect(await armed(page)).toBe(false);
+
+            await freshPrompt(page);
         } finally {
             await page.close();
         }
@@ -482,6 +506,9 @@ describe("Control and the keys of the row", () => {
 
                 expect(await focusedThing(page)).toBe("gt-input");
             }
+
+            // The keys went to the shell as well as to the row: a line of the shell's own is left half typed by them.
+            await freshPrompt(page);
         } finally {
             await page.close();
         }
@@ -986,6 +1013,58 @@ describe("typing into the terminal", () => {
             );
 
             expect(echoed).toContain("echo keptcharacters");
+        } finally {
+            await page.close();
+        }
+    }, 30_000);
+});
+
+describe("the row's modifiers", () => {
+    /** A command in the shell, as a person types it: the soft keyboard's own way, which is text and not a key. */
+    const softType = (page: Page, typed: string) =>
+        page.evaluate((text) => {
+            const input = document.querySelector(".gt-input") as HTMLTextAreaElement;
+
+            input.focus();
+            input.value = text;
+            input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+        }, typed);
+
+    /**
+     * The row's Control, Shift, and Alt arm the next key, and the key that a phone has for a letter is the soft keyboard
+     * below the row: it gives the letter as text, never as a key event, so the armed modifier was dropped and ⌃ then `c`
+     * sent a plain `c` -- the interrupt that a phone has no other way to send.
+     */
+    test("go with the letters that the soft keyboard types", async () => {
+        const page = await openPhone();
+
+        try {
+            await keyboardUp(page);
+            await freshPrompt(page);
+
+            // The bytes that reach the shell, in hex: each armed modifier and then a letter.
+            await softType(page, "od -An -tx1\n");
+            await settle(page, 900);
+
+            for (const [modifier, letter] of [["⌃", "g"], ["⇧", "a"], ["⌥", "b"]] as const) {
+                await tapKey(page, modifier);
+                await softType(page, letter);
+                await settle(page, 350);
+            }
+
+            // The first ^D flushes what od has, and the next one, on a line of its own, is the end of its input.
+            await softType(page, "\u0004\u0004");
+            await settle(page, 1500);
+
+            const bytes = await page.evaluate(() =>
+                [...document.querySelectorAll(".gt-row")]
+                    .map((row) => row.textContent ?? "")
+                    .join(" ")
+                    .replace(/\s+/g, " "),
+            );
+
+            // ^G is Control and g, 41 is the shifted letter, and 1b 62 is Alt and b, which a terminal reads as a meta key.
+            expect(bytes).toContain("07 41 1b 62");
         } finally {
             await page.close();
         }
