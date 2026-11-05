@@ -227,9 +227,14 @@ export class Screen {
         this.#flush(true);
     }
 
+    /**
+     * Moves the view through the scrollback. A scroll brings other rows into sight and leaves every other row as it was,
+     * so the rows that changed are the frame that a scroll sends. A scroll that the view already is changes no row, and
+     * its frame carries nothing.
+     */
     scroll(to: "top" | "bottom" | number): void {
         this.#term.scrollViewport(to);
-        this.#flush(true);
+        this.#flush(false);
     }
 
     /** Ends the screen, and sends one last whole frame so that a page can draw how it stood. */
