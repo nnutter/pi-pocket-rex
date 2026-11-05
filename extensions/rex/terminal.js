@@ -235,8 +235,6 @@ export class TerminalView {
     #scrollPixels = 0;
     /** When a finger last moved the view: a tap and a selection belong to a finger that stayed. */
     #pannedAt = 0;
-    /** How far back this page has moved the view, in lines: Rex reports the length of the scrollback, not the place. */
-    #scrolled = 0;
     #pendingScroll = 0;
     /** What has not been sent to the terminal yet, oldest first. */
     #waiting = [];
@@ -848,8 +846,6 @@ export class TerminalView {
     #scroll(lines) {
         if (this.#id === null || this.#destroyed) return;
 
-        this.#scrolled = Math.max(0, this.#scrolled - lines);
-
         this.#pendingScroll += lines;
         clearTimeout(this.#scrollTimer);
         this.#scrollTimer = setTimeout(() => {
@@ -859,15 +855,6 @@ export class TerminalView {
 
             if (moves !== 0) this.#pocket.api(`terminals/${this.#id}/scroll`, { lines: moves }).catch(() => {});
         }, 40);
-    }
-
-    /** Puts the view back at the prompt, where the next line will be. */
-    #toBottom() {
-        this.#scrolled = 0;
-        this.#pendingScroll = 0;
-        clearTimeout(this.#scrollTimer);
-
-        this.#pocket.api(`terminals/${this.#id}/scroll`, { to: "bottom" }).catch(() => {});
     }
 
     /**
@@ -880,9 +867,11 @@ export class TerminalView {
     #send(body) {
         if (this.#id === null || this.#destroyed) return;
 
-        // A person who types is looking for the prompt, and a view that is scrolled back shows the lines above it: what
-        // is typed would go to a line that is not on the screen.
-        if (this.#scrolled > 0) this.#toBottom();
+        // A person who types is looking for the prompt, and the module puts the view at it before it types: this page
+        // cannot know that the view is back, since another page or a reload may have scrolled it. A scroll that this
+        // page asked for, and that has not gone yet, would arrive after the module's own and undo it.
+        this.#pendingScroll = 0;
+        clearTimeout(this.#scrollTimer);
 
         const last = this.#waiting.at(-1);
 

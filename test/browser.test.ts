@@ -1028,6 +1028,46 @@ describe("typing into the terminal", () => {
 });
 
 describe("the keyboard of a phone", () => {
+    /** A character of the soft keyboard: text that the field takes, and no key event at all. */
+    const softType = (page: Page, typed: string) =>
+        page.evaluate((text) => {
+            const input = document.querySelector(".gt-input") as HTMLTextAreaElement;
+
+            input.focus();
+            input.value = text;
+            input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+        }, typed);
+
+    /** The first line in sight on the screen, which says where in the scrollback the view is. */
+    const firstLine = (page: Page) =>
+        page.evaluate(
+            () =>
+                [...document.querySelectorAll(".gt-row")]
+                    .map((row) => row.textContent?.trim() ?? "")
+                    .filter((text) => text !== "")[0] ?? "",
+        );
+
+    /** Prints enough lines to fill the screen and leave a scrollback, and leaves the view on their last one. */
+    const linesAbove = async (page: Page) => {
+        await softType(page, "clear; seq 1 80\n");
+        await page.waitForFunction(
+            () =>
+                Number(
+                    [...document.querySelectorAll(".gt-row")]
+                        .map((row) => row.textContent?.trim() ?? "")
+                        .filter((text) => text !== "")[0],
+                ) > 1,
+            { timeout: 15_000 },
+        );
+    };
+
+    /** A finger that travels down the screen: the lines that are above the prompt come into sight. */
+    const scrollBack = async (page: Page) => {
+        await page.touchscreen.touchStart(200, 260);
+        for (let y = 280; y <= 520; y += 20) await page.touchscreen.touchMove(200, y);
+        await page.touchscreen.touchEnd();
+        await settle(page, 1200);
+    };
     /**
      * A soft keyboard's backspace deletes a character of the field that the keys go through, and a field that is empty
      * after every keystroke has nothing to delete: the delete was no event at all, and holding the key repeated nothing.
@@ -1081,54 +1121,56 @@ describe("the keyboard of a phone", () => {
         const page = await openPhone();
 
         try {
-            const first = () =>
-                page.evaluate(
-                    () =>
-                        [...document.querySelectorAll(".gt-row")]
-                            .map((row) => row.textContent?.trim() ?? "")
-                            .filter((text) => text !== "")[0] ?? "",
-                );
+            await linesAbove(page);
 
-            await page.evaluate(() => {
-                const input = document.querySelector(".gt-input") as HTMLTextAreaElement;
+            const atBottom = await firstLine(page);
 
-                input.focus();
-                input.value = "clear; seq 1 80\n";
-                input.dispatchEvent(new InputEvent("input", { bubbles: true }));
-            });
-            await page.waitForFunction(
-                () =>
-                    Number(
-                        [...document.querySelectorAll(".gt-row")]
-                            .map((row) => row.textContent?.trim() ?? "")
-                            .filter((text) => text !== "")[0],
-                    ) > 1,
-                { timeout: 15_000 },
-            );
+            await scrollBack(page);
 
-            const atBottom = await first();
-
-            // A finger that travels down the screen brings the lines that are above the prompt into sight.
-            await page.touchscreen.touchStart(200, 260);
-            for (let y = 280; y <= 520; y += 20) await page.touchscreen.touchMove(200, y);
-            await page.touchscreen.touchEnd();
-            await settle(page, 1200);
-
-            const scrolled = await first();
+            const scrolled = await firstLine(page);
 
             expect(Number(scrolled)).toBeLessThan(Number(atBottom));
 
             // The keys come back to the prompt, and the line that they are typed on is on the screen.
-            await page.evaluate(() => {
-                const input = document.querySelector(".gt-input") as HTMLTextAreaElement;
-
-                input.focus();
-                input.value = "x";
-                input.dispatchEvent(new InputEvent("input", { bubbles: true }));
-            });
+            await softType(page, "x");
             await settle(page, 1200);
 
-            expect(Number(await first())).toBeGreaterThan(Number(scrolled));
+            expect(Number(await firstLine(page))).toBeGreaterThan(Number(scrolled));
+        } finally {
+            await page.close();
+        }
+    }, 30_000);
+
+    /**
+     * The view is the terminal's, not the page's that moved it: a page that opens after the scrolling -- a reload, a tab
+     * that comes back to the app -- has no finger behind the view, so it cannot know that the view is scrolled back. A
+     * key typed there still has to bring the prompt onto the screen.
+     */
+    test("comes back to the prompt on a key after a reload that finds the view scrolled back", async () => {
+        const page = await openPhone();
+
+        try {
+            await linesAbove(page);
+
+            const atBottom = await firstLine(page);
+
+            await scrollBack(page);
+
+            const scrolled = await firstLine(page);
+
+            expect(Number(scrolled)).toBeLessThan(Number(atBottom));
+
+            await page.reload({ waitUntil: "networkidle2" });
+            await page.waitForSelector(".gt-panes .gt-row");
+            await settle(page, 1200);
+
+            // The page that came back has scrolled nothing, and it draws the view that it found.
+            expect(await firstLine(page)).toBe(scrolled);
+
+            await softType(page, "x");
+            await settle(page, 1200);
+
+            expect(Number(await firstLine(page))).toBeGreaterThan(Number(scrolled));
         } finally {
             await page.close();
         }

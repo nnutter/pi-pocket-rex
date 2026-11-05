@@ -562,6 +562,16 @@ export default function createRex(_host: Host | null, web: Web) {
         });
     }
 
+    /**
+     * Puts the view at the prompt, where what is typed will be. A person who types is looking for the prompt, and the
+     * view may be scrolled back: by the page that types, by another page of the same terminal, or by a page that a
+     * reload left behind. A frame says how long the scrollback is and not where the view is in it, so no page can know
+     * that the view is back, and the module puts it there before the keys go.
+     */
+    function atPrompt(terminal: Terminal): void {
+        write(terminal, { op: "scroll", to: "bottom" });
+    }
+
     /** Hands a piece of the stream to the runner, without the parts that a screen cannot take. */
     function feed(terminal: Terminal, bytes: Uint8Array): void {
         const rest = terminal.filter === null ? bytes : terminal.filter.push(bytes);
@@ -1071,6 +1081,8 @@ export default function createRex(_host: Host | null, web: Web) {
     web.route("POST", "terminals/:id/input", async (request) => {
         const terminal = find(request);
 
+        atPrompt(terminal);
+
         if (typeof request.body.text === "string" && request.body.text !== "") await type(terminal, request.body.text);
 
         for (const key of Array.isArray(request.body.keys) ? (request.body.keys as unknown[]).slice(0, 32) : []) {
@@ -1086,6 +1098,8 @@ export default function createRex(_host: Host | null, web: Web) {
 
     web.route("POST", "terminals/:id/paste", async (request) => {
         const terminal = find(request);
+
+        atPrompt(terminal);
 
         await terminal.client.call("block.event", {
             session_id: terminal.sessionId,
