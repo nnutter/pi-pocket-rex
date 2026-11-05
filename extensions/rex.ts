@@ -11,9 +11,9 @@
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { RexCallError, RexClient, RexStream, RexMessageFilter } from "./_rex-client.ts";
 import type { Host, Web, WebRequest, WebSession } from "./_pocket.d.ts";
 
@@ -53,6 +53,9 @@ const RUNNER_START_MS = 10_000;
 
 /** How long a tab that said goodbye waits for another tab to come back: a reload is a goodbye and a hello. */
 const TAB_GRACE_MS = 10_000;
+
+/** The file that names the sessions that this module made, under Pi Pocket's data folder. */
+const MADE_FILE = "made.json";
 
 /** One terminal: a block in a Rex session, the runner that draws it, and the screen as it was after the last frame. */
 interface Terminal {
@@ -105,6 +108,75 @@ export default function createRex(_host: Host | null, web: Web) {
 
     /** The goodbye that waits for a tab to come back, while one waits. */
     let leaving: ReturnType<typeof setTimeout> | null = null;
+
+    /** Pi Pocket's data folder, which a person can move with `PI_POCKET_DIR`: where a module keeps what it remembers. */
+    const dataFolder = (process.env.PI_POCKET_DIR ?? "").trim() || join(homedir(), ".pi-pocket");
+
+    /** The file of the sessions that this module made. */
+    const ledgerFile = join(dataFolder, "rex", MADE_FILE);
+
+    /**
+     * The sessions that this module made, by the endpoint of the machine that holds each one.
+     *
+     * Rex keeps a session that has lost its last block, and a tab that dies says no goodbye, so nothing on the Rex side
+     * would ever close the session that such a tab leaves. A file is what makes the next look work after the restart
+     * that lost the goodbye, and Pi Pocket's data folder is where a module's own state belongs.
+     */
+    const ledger = readLedger();
+
+    /** The ledger as it is on disk: empty when it is not there, or when a half-written save left what is not a ledger. */
+    function readLedger(): Map<string, Set<string>> {
+        const kept = new Map<string, Set<string>>();
+
+        try {
+            const held = JSON.parse(readFileSync(ledgerFile, "utf8")) as Record<string, unknown>;
+
+            for (const [host, ids] of Object.entries(held)) {
+                if (Array.isArray(ids)) kept.set(host, new Set(ids.filter((each) => typeof each === "string")));
+            }
+        } catch {
+            // A module that remembers nothing is a module that ends nothing that it did not make, which is the safe way
+            // to be wrong.
+        }
+
+        return kept;
+    }
+
+    /** Writes the ledger down, so that the next run of this module can find what this one made. */
+    function saveLedger(): void {
+        const held: Record<string, string[]> = {};
+
+        for (const [host, ids] of ledger) if (ids.size > 0) held[host] = [...ids];
+
+        try {
+            mkdirSync(dirname(ledgerFile), { recursive: true });
+            writeFileSync(ledgerFile, `${JSON.stringify(held, null, 4)}\n`);
+        } catch {
+            // A data folder that cannot be written is a folder whose sessions the next run cannot clean up. No terminal
+            // fails for it.
+        }
+    }
+
+    /** Says that this module made a session, so that a look after a restart can find it. */
+    function remember(hostKey: string, sessionId: string): void {
+        const ids = ledger.get(hostKey) ?? new Set<string>();
+
+        ledger.set(hostKey, ids);
+
+        if (ids.has(sessionId)) return;
+
+        ids.add(sessionId);
+        saveLedger();
+    }
+
+    /** Says that a session that this module made is gone. */
+    function forget(hostKey: string, sessionId: string): void {
+        const ids = ledger.get(hostKey);
+
+        if (ids === undefined || !ids.delete(sessionId)) return;
+
+        saveLedger();
+    }
 
     /** The socket that a Rex server on this machine listens on, which is what `rex server status` prints. */
     function defaultSocket(): string {
@@ -406,6 +478,8 @@ export default function createRex(_host: Host | null, web: Web) {
         if (typeof made.session_id !== "string" || made.session_id === "") {
             throw web.error(502, "Rex made no session for this conversation.");
         }
+
+        remember(host.key, made.session_id);
 
         return made.session_id;
     }
@@ -893,7 +967,7 @@ export default function createRex(_host: Host | null, web: Web) {
         }
 
         for (const terminal of sessions.values()) {
-            await destroyIfEmpty(terminal.client, terminal.sessionId);
+            if (await destroyIfEmpty(terminal.client, terminal.sessionId)) forget(terminal.hostKey, terminal.sessionId);
         }
     }
 
@@ -1026,6 +1100,8 @@ export default function createRex(_host: Host | null, web: Web) {
         if (typeof made.session_id !== "string" || made.session_id === "") {
             throw web.error(502, "Rex made no session.");
         }
+
+        remember(host.key, made.session_id);
 
         const made_ = (await client.sessions()).find((each) => each.session_id === made.session_id);
 

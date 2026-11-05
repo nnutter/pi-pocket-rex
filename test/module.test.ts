@@ -5,7 +5,8 @@
  * The runner is the real one, with `libghostty-vt` in this repository, so a frame here is the frame a page draws.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { homedir } from "node:os";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import createRex, { rexKeyName, rexKeyOf } from "../extensions/rex.ts";
 import { fakeRex, type FakeRex } from "./fake-rex.ts";
@@ -13,6 +14,8 @@ import { fakeWeb, textOf, type FakeWeb, type FrameEvent } from "./fake-web.ts";
 
 const root = join(import.meta.dir, "..");
 const made: Array<FakeWeb | FakeRex> = [];
+/** The data folders that the modules in this test wrote to, each thrown away with the test that made it. */
+const states: string[] = [];
 
 afterEach(async () => {
     const all = made.splice(0);
@@ -20,6 +23,7 @@ afterEach(async () => {
     // The module goes first: a server that stops under a connection leaves one in a state that only it knows about.
     for (const each of all) if ("dispose" in each) await each.dispose();
     for (const each of all) if (!("dispose" in each)) each.stop();
+    for (const folder of states.splice(0)) rmSync(folder, { recursive: true, force: true });
 });
 
 function serve(options: Parameters<typeof fakeRex>[0] = {}): FakeRex {
@@ -35,7 +39,26 @@ function serve(options: Parameters<typeof fakeRex>[0] = {}): FakeRex {
     return server;
 }
 
-function module(server: FakeRex, options: { sessions?: Array<{ id: number; cwd: string; archived?: boolean }> } = {}): FakeWeb {
+function module(
+    server: FakeRex,
+    options: {
+        sessions?: Array<{ id: number; cwd: string; archived?: boolean }>;
+        /** The sessions that the module made before this run, as a data folder that a restart left it would hold them. */
+        ledger?: Record<string, string[]>;
+    } = {},
+): FakeWeb & { state: string } {
+    // A module remembers what it made in Pi Pocket's data folder, so each one here gets its own: no test reads
+    // another's ledger, and none of them writes into the person's own folder.
+    const state = mkdtempSync(join(tmpdir(), "rex-state-"));
+
+    process.env.PI_POCKET_DIR = state;
+    states.push(state);
+
+    if (options.ledger !== undefined) {
+        mkdirSync(join(state, "rex"), { recursive: true });
+        writeFileSync(join(state, "rex", "made.json"), JSON.stringify(options.ledger));
+    }
+
     const fake = fakeWeb({
         settings: { local: server.url, runtime: join(root, "src") },
         sessions: (options.sessions ?? [{ id: 7, cwd: root }]).map((each) => ({
@@ -49,7 +72,12 @@ function module(server: FakeRex, options: { sessions?: Array<{ id: number; cwd: 
     createRex(fake.host as never, fake.web);
     made.push(fake);
 
-    return fake;
+    return Object.assign(fake, { state });
+}
+
+/** The ledger that a module in this test wrote: the sessions that it made, by the machine that holds each one. */
+function ledgerOf(state: string): Record<string, string[]> {
+    return JSON.parse(readFileSync(join(state, "rex", "made.json"), "utf8")) as Record<string, string[]>;
 }
 
 interface Summary {
@@ -391,6 +419,21 @@ test("starts a session for the picker's own row, and says where it is", async ()
     });
 });
 
+test("remembers the sessions that it made, so that a look after a restart can find them", async () => {
+    const server = serve();
+    const fake = module(server);
+
+    // The conversation's own terminal, and the picker's own row: each makes a session, and both are this module's.
+    const own = await fake.call<{ terminal: Summary }>({
+        method: "POST",
+        path: "terminals",
+        body: { conversation: 7, cols: 40, rows: 6 },
+    });
+    const picked = await fake.call<{ session: string }>({ method: "POST", path: "sessions", body: {} });
+
+    expect(ledgerOf(fake.state)).toEqual({ [server.url]: [own.terminal.session, picked.session] });
+});
+
 test("adds a machine to the list that Rex keeps, so that Rex.app shows it too", async () => {
     const server = serve();
     const fake = module(server);
@@ -481,8 +524,9 @@ describe("the tabs of the app", () => {
                     { block_id: "block:9", creator_name: "com.superlogical.editor" },
                 ],
             });
-            const mine = module(alone);
-            const theirs = module(shared);
+            // Each remembers the session that it watched, as a run that a crash ended would.
+            const mine = module(alone, { ledger: { [alone.url]: ["session:1"] } });
+            const theirs = module(shared, { ledger: { [shared.url]: ["session:1"] } });
 
             await open(mine, alone);
             await open(theirs, shared);
@@ -520,6 +564,10 @@ describe("the tabs of the app", () => {
 
             expect(methods(shared)).toContain("block.close");
             expect(methods(shared)).not.toContain("session.destroy");
+
+            // The ledger is done with the session that it closed, and it keeps the one that stayed.
+            expect(ledgerOf(mine.state)).toEqual({});
+            expect(ledgerOf(theirs.state)).toEqual({ [shared.url]: ["session:1"] });
         },
         GRACE + 30_000,
     );
