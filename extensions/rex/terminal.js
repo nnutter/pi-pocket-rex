@@ -3,6 +3,19 @@
  * textarea that turns keystrokes into the key events that Ghostty's encoder reads.
  */
 
+/** How long a wheel event waits for another one before it is a notch of its own rather than a turn of a trackpad. */
+const NOTCH_MS = 30;
+
+/** The samples of a finger that is moving, and how far back a throw of it is measured: the last quarter second. */
+const THROW_WINDOW_MS = 100;
+
+/** How fast a throw may be, in pixels a millisecond, and how slow it is when the view stops on its own. */
+const THROW_FASTEST = 4;
+const THROW_SLOWEST = 0.03;
+
+/** How long a throw takes to lose most of its speed: its distance is its speed times this. */
+const THROW_MS = 325;
+
 /** The bits of a run's `flags`, as `pty-host.ts` writes them. */
 const BOLD = 1;
 const FAINT = 2;
@@ -228,16 +241,28 @@ export class TerminalView {
     #resizeTimer = null;
     #opening = false;
     #destroyed = false;
-    #scrollTimer = null;
     #flashTimer = null;
     #bellTimer = null;
     /** The distance that a wheel or a finger has moved, less than a line of it. */
     #scrollPixels = 0;
     /** When a finger last moved the view: a tap and a selection belong to a finger that stayed. */
     #pannedAt = 0;
-    /** How far back this page has moved the view, in lines: Rex reports the length of the scrollback, not the place. */
-    #scrolled = 0;
     #pendingScroll = 0;
+    /** The distance that a wheel has turned and the view has not moved by yet, in pixels. */
+    #turnPixels = 0;
+    #turnTimer = null;
+    /** When a wheel last turned, so that a notch of its own is told from the stream of a trackpad. */
+    #turnAt = 0;
+    /** The places that a finger has been, and when: what its throw is when it leaves the screen. */
+    #finger = [];
+    /** How fast the view is going after a finger left, in pixels a millisecond, and the frame that carries it. */
+    #throwSpeed = 0;
+    #throwTimer = null;
+    #throwAt = 0;
+    /** Whether a scroll of the view is on its way: one is, so that a wheel's turn moves the view in one piece. */
+    #scrolling = false;
+    /** What resolves when no scroll of the view is on its way. */
+    #scrollIdle = Promise.resolve();
     /** What has not been sent to the terminal yet, oldest first. */
     #waiting = [];
     /** Whether a request of the queue is on its way: only one is, so that the order of what a person did is kept. */
@@ -432,7 +457,17 @@ export class TerminalView {
         screen.addEventListener("click", tap);
         screen.addEventListener("wheel", (event) => {
             event.preventDefault();
-            this.#pan(event.deltaY);
+
+            const pixels = this.#turnedBy(event);
+            const now = performance.now();
+            const notch = now - this.#turnAt > NOTCH_MS && Math.abs(pixels) >= this.#cell.height * 2;
+
+            this.#turnAt = now;
+
+            // A wheel's notch comes by itself, and is a jump of several lines: the view glides to it. A trackpad turns in
+            // a stream of small ones, and a stream that waits its turn is a stream that trails the fingers.
+            if (notch) this.#turn(pixels);
+            else this.#pan(pixels);
         }, { passive: false });
 
         // A finger on the screen moves the view through the scrollback, as a wheel does: a phone has no wheel, and the
@@ -444,24 +479,50 @@ export class TerminalView {
         screen.addEventListener("touchstart", (event) => {
             if (event.touches.length !== 1) return;
 
+            // A finger that comes down takes the view from a throw of the one before it.
+            this.#stopThrow();
+
             from = event.touches[0].clientY;
             moving = false;
+            this.#finger = [{ at: performance.now(), y: from }];
         }, { passive: true });
 
         screen.addEventListener("touchmove", (event) => {
             if (event.touches.length !== 1) return;
 
             const to = event.touches[0].clientY;
+            const now = performance.now();
+
+            // The browser may not take this gesture for a scroll of the page, and it decides before the finger has
+            // travelled the little that tells a tap from a swipe: a gesture that it takes is one that it cancels.
+            event.preventDefault();
 
             if (!moving && Math.abs(to - from) < 8) return;
 
             moving = true;
             this.#pannedAt = Date.now();
 
-            event.preventDefault();
+            this.#finger.push({ at: now, y: to });
+
+            if (this.#finger.length > 8) this.#finger.shift();
+
             this.#pan(from - to);
             from = to;
         }, { passive: false });
+
+        // The fingers left the glass: the view goes on at the speed of the last of them, as a terminal that is flung
+        // does, rather than stopping on the line where the finger happened to be.
+        screen.addEventListener("touchend", () => {
+            if (!moving) return;
+
+            moving = false;
+            this.#thrown();
+        }, { passive: true });
+
+        screen.addEventListener("touchcancel", () => {
+            moving = false;
+            this.#finger = [];
+        }, { passive: true });
 
         input.addEventListener("keydown", (event) => this.#keys(event, true));
 
@@ -844,30 +905,129 @@ export class TerminalView {
         this.#scroll(lines);
     }
 
-    /** Moves the view back through the scrollback: the lines of a wheel's turn, taken together, one call each 40 ms. */
+    /**
+     * Turns the view by the distance that a wheel made. A wheel's notch is six lines at once, and a view that took them
+     * all in one frame jumped: the turn is taken a line at a time, on the frames that follow, while a trackpad's turns
+     * make a line as often as they do and reach the view as they come.
+     */
+    #turn(pixels) {
+        if (this.#id === null || this.#destroyed) return;
+
+        if (globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true) {
+            this.#pan(pixels);
+
+            return;
+        }
+
+        this.#turnPixels += pixels;
+        this.#turnSoon();
+    }
+
+    /** Moves the view by one line of what the wheel has turned, on the next frame, and on the ones after while any is left. */
+    #turnSoon() {
+        if (this.#turnTimer !== null || this.#id === null || this.#destroyed) return;
+
+        this.#turnTimer = requestAnimationFrame(() => {
+            this.#turnTimer = null;
+
+            const lines = Math.trunc(this.#turnPixels / this.#cell.height);
+
+            if (lines === 0) return;
+
+            const one = Math.sign(lines) * this.#cell.height;
+
+            this.#turnPixels -= one;
+            this.#pan(one);
+
+            this.#turnSoon();
+        });
+    }
+
+    /** Sets the view going at the speed that the finger left at, or stops it when the finger was still. */
+    #thrown() {
+        const samples = this.#finger;
+        const last = samples.at(-1);
+
+        this.#finger = [];
+
+        if (last === undefined) return;
+
+        const first = samples.find((each) => last.at - each.at <= THROW_WINDOW_MS) ?? last;
+
+        if (first === last) return;
+
+        // Down the screen is a view that goes back through the scrollback, which is what a pan of it is.
+        const speed = (last.y - first.y) / (last.at - first.at);
+
+        if (Math.abs(speed) < THROW_SLOWEST) return;
+
+        this.#throwSpeed = -Math.max(-THROW_FASTEST, Math.min(THROW_FASTEST, speed));
+        this.#throwAt = performance.now();
+        this.#throwTimer = requestAnimationFrame((now) => this.#coast(now));
+    }
+
+    /** Moves the view by what a throw has left, frame by frame, until it is too slow to see. */
+    #coast(now) {
+        this.#throwTimer = null;
+
+        if (this.#destroyed || this.#id === null) return;
+
+        // A frame that took long is a frame that the view moves for, and no more: the throw must not jump.
+        const took = Math.min(now - this.#throwAt, 32);
+
+        this.#throwAt = now;
+        this.#pannedAt = Date.now();
+
+        this.#pan(this.#throwSpeed * took);
+        this.#throwSpeed *= Math.exp(-took / THROW_MS);
+
+        if (Math.abs(this.#throwSpeed) >= THROW_SLOWEST) this.#throwTimer = requestAnimationFrame((next) => this.#coast(next));
+    }
+
+    /** Stops a view that is going after a throw, as a finger that comes down does. */
+    #stopThrow() {
+        this.#throwSpeed = 0;
+
+        if (this.#throwTimer !== null) {
+            cancelAnimationFrame(this.#throwTimer);
+            this.#throwTimer = null;
+        }
+    }
+
+    /** The distance that a wheel event turns, in pixels: a wheel may count in lines or in pages, and not only in pixels. */
+    #turnedBy(event) {
+        if (event.deltaMode === 1) return event.deltaY * this.#cell.height;
+        if (event.deltaMode === 2) return event.deltaY * this.#cell.height * this.#rows;
+
+        return event.deltaY;
+    }
+
+    /**
+     * Moves the view through the scrollback: asked for as soon as it is asked for, and one request on its way at a time,
+     * so that a wheel's turn moves the view as it comes rather than in one piece after a wait.
+     */
     #scroll(lines) {
         if (this.#id === null || this.#destroyed) return;
 
-        this.#scrolled = Math.max(0, this.#scrolled - lines);
-
         this.#pendingScroll += lines;
-        clearTimeout(this.#scrollTimer);
-        this.#scrollTimer = setTimeout(() => {
-            const moves = this.#pendingScroll;
 
-            this.#pendingScroll = 0;
+        if (this.#scrolling) return;
 
-            if (moves !== 0) this.#pocket.api(`terminals/${this.#id}/scroll`, { lines: moves }).catch(() => {});
-        }, 40);
+        this.#scrolling = true;
+        this.#scrollIdle = this.#flushScroll();
     }
 
-    /** Puts the view back at the prompt, where the next line will be. */
-    #toBottom() {
-        this.#scrolled = 0;
-        this.#pendingScroll = 0;
-        clearTimeout(this.#scrollTimer);
+    /** Sends the lines that the view has not moved by yet, until none is left. */
+    async #flushScroll() {
+        try {
+            for (let lines = this.#pendingScroll; lines !== 0; lines = this.#pendingScroll) {
+                this.#pendingScroll = 0;
 
-        this.#pocket.api(`terminals/${this.#id}/scroll`, { to: "bottom" }).catch(() => {});
+                await this.#pocket.api(`terminals/${this.#id}/scroll`, { lines }).catch(() => {});
+            }
+        } finally {
+            this.#scrolling = false;
+        }
     }
 
     /**
@@ -880,9 +1040,18 @@ export class TerminalView {
     #send(body) {
         if (this.#id === null || this.#destroyed) return;
 
-        // A person who types is looking for the prompt, and a view that is scrolled back shows the lines above it: what
-        // is typed would go to a line that is not on the screen.
-        if (this.#scrolled > 0) this.#toBottom();
+        // A person who types is looking for the prompt, and the module puts the view at it before it types: this page
+        // cannot know that the view is back, since another page or a reload may have scrolled it. A scroll that this
+        // page asked for, and that has not gone yet, would arrive after the module's own and undo it.
+        this.#pendingScroll = 0;
+        this.#turnPixels = 0;
+        this.#finger = [];
+        this.#stopThrow();
+
+        if (this.#turnTimer !== null) {
+            cancelAnimationFrame(this.#turnTimer);
+            this.#turnTimer = null;
+        }
 
         const last = this.#waiting.at(-1);
 
@@ -902,6 +1071,9 @@ export class TerminalView {
 
         try {
             for (let body = this.#waiting.shift(); body !== undefined; body = this.#waiting.shift()) {
+                // A scroll of the view that is on its way would land after what is typed, and move the view off the
+                // prompt that the module has just put it on.
+                await this.#scrollIdle;
                 const path = body.paste === undefined ? "input" : "paste";
                 const sent = body.paste === undefined ? body : { text: body.paste };
 
@@ -1059,19 +1231,6 @@ export class TerminalView {
         await this.open(true);
     }
 
-    /** Ends the shell and leaves the screen as it is. */
-    async kill() {
-        const id = this.#id;
-
-        if (id === null) return;
-
-        try {
-            await this.#pocket.api(`terminals/${id}`, undefined, { method: "DELETE" });
-        } catch (failure) {
-            this.#publish({ error: failure.message });
-        }
-    }
-
     setFont(delta) {
         this.#font = Math.max(9, Math.min(22, this.#font + delta));
         globalThis.localStorage?.setItem("x.rex.font", String(this.#font));
@@ -1172,8 +1331,18 @@ export class TerminalView {
     destroy() {
         this.#destroyed = true;
         this.#waiting.length = 0;
+        this.#pendingScroll = 0;
+        this.#turnPixels = 0;
+
+        if (this.#turnTimer !== null) {
+            cancelAnimationFrame(this.#turnTimer);
+            this.#turnTimer = null;
+        }
+
+        this.#finger = [];
+        this.#stopThrow();
+
         clearTimeout(this.#resizeTimer);
-        clearTimeout(this.#scrollTimer);
         clearTimeout(this.#flashTimer);
         clearTimeout(this.#bellTimer);
         clearTimeout(this.#focusTimer);

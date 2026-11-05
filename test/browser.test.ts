@@ -183,6 +183,68 @@ async function freshPrompt(page: Page): Promise<void> {
     await settle(page, 350);
 }
 
+/** A character of the soft keyboard: text that the field takes, and no key event at all. */
+function softType(page: Page, typed: string): Promise<void> {
+    return page.evaluate((text) => {
+        const input = document.querySelector(".gt-input") as HTMLTextAreaElement;
+
+        input.focus();
+        input.value = text;
+        input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    }, typed);
+}
+
+/** The first line in sight on the screen, which says where in the scrollback the view is. */
+function firstLine(page: Page): Promise<string> {
+    return page.evaluate(
+        () =>
+            [...document.querySelectorAll(".gt-row")]
+                .map((row) => row.textContent?.trim() ?? "")
+                .filter((text) => text !== "")[0] ?? "",
+    );
+}
+
+/**
+ * Waits until the screen stops changing its size.
+ *
+ * The page measures the font and the room again after a moment, and a screen that gains or loses a row moves every line
+ * of the view: a test that counts the lines that a scroll moved must not have a resize under it.
+ */
+async function quietScreen(page: Page): Promise<void> {
+    let rows = -1;
+
+    for (let tries = 0; tries < 25; tries += 1) {
+        const now = await page.$$eval(".gt-row", (rows) => rows.length);
+
+        if (now === rows) return;
+
+        rows = now;
+        await settle(page, 200);
+    }
+}
+
+/** Prints enough lines to fill the screen and leave a scrollback, and leaves the view on their last one. */
+async function linesAbove(page: Page): Promise<void> {
+    await softType(page, "clear; seq 1 80\n");
+
+    // The last line of the count, and not the first: a test that watches the view must not see the count arriving.
+    await page.waitForFunction(
+        () => [...document.querySelectorAll(".gt-row")].some((row) => (row.textContent ?? "").trim() === "80"),
+        { timeout: 15_000 },
+    );
+    // The prompt that the count leaves comes after it, and it is not part of the view that a test watches.
+    await settle(page, 400);
+    await quietScreen(page);
+}
+
+/** A finger that travels down the screen: the lines that are above the prompt come into sight. */
+async function scrollBack(page: Page): Promise<void> {
+    await page.touchscreen.touchStart(200, 260);
+    for (let y = 280; y <= 520; y += 20) await page.touchscreen.touchMove(200, y);
+    await page.touchscreen.touchEnd();
+    await settle(page, 1200);
+}
+
 /** A finger on an element: a touch, as a phone sends one. */
 async function tap(page: Page, selector: string): Promise<void> {
     const element = await page.$(selector);
@@ -1081,54 +1143,193 @@ describe("the keyboard of a phone", () => {
         const page = await openPhone();
 
         try {
-            const first = () =>
-                page.evaluate(
-                    () =>
-                        [...document.querySelectorAll(".gt-row")]
-                            .map((row) => row.textContent?.trim() ?? "")
-                            .filter((text) => text !== "")[0] ?? "",
-                );
+            await linesAbove(page);
 
-            await page.evaluate(() => {
-                const input = document.querySelector(".gt-input") as HTMLTextAreaElement;
+            const atBottom = await firstLine(page);
 
-                input.focus();
-                input.value = "clear; seq 1 80\n";
-                input.dispatchEvent(new InputEvent("input", { bubbles: true }));
-            });
-            await page.waitForFunction(
-                () =>
-                    Number(
-                        [...document.querySelectorAll(".gt-row")]
-                            .map((row) => row.textContent?.trim() ?? "")
-                            .filter((text) => text !== "")[0],
-                    ) > 1,
-                { timeout: 15_000 },
-            );
+            await scrollBack(page);
 
-            const atBottom = await first();
-
-            // A finger that travels down the screen brings the lines that are above the prompt into sight.
-            await page.touchscreen.touchStart(200, 260);
-            for (let y = 280; y <= 520; y += 20) await page.touchscreen.touchMove(200, y);
-            await page.touchscreen.touchEnd();
-            await settle(page, 1200);
-
-            const scrolled = await first();
+            const scrolled = await firstLine(page);
 
             expect(Number(scrolled)).toBeLessThan(Number(atBottom));
 
             // The keys come back to the prompt, and the line that they are typed on is on the screen.
-            await page.evaluate(() => {
-                const input = document.querySelector(".gt-input") as HTMLTextAreaElement;
-
-                input.focus();
-                input.value = "x";
-                input.dispatchEvent(new InputEvent("input", { bubbles: true }));
-            });
+            await softType(page, "x");
             await settle(page, 1200);
 
-            expect(Number(await first())).toBeGreaterThan(Number(scrolled));
+            expect(Number(await firstLine(page))).toBeGreaterThan(Number(scrolled));
+        } finally {
+            await page.close();
+        }
+    }, 30_000);
+
+    /**
+     * A finger that travels down the screen moves the view through the scrollback, and the browser must not take that
+     * gesture for a scroll of the page: a gesture that it takes is one that it stops sending, and an iPad's swipe moved
+     * a couple of lines and stopped with every one of them.
+     */
+    test("keeps the swipe of a finger for its own view, and not the page's", async () => {
+        const page = await openPhone();
+
+        try {
+            expect(await page.$eval(".gt-screen", (screen) => getComputedStyle(screen).touchAction)).toBe("none");
+        } finally {
+            await page.close();
+        }
+    }, 30_000);
+
+    /**
+     * A flick of a finger on glass throws the view on after the finger leaves, as the scroll of anything on a tablet
+     * does. A view that stopped on the line where the finger happened to stop moved a couple of lines and stopped with
+     * every swipe.
+     */
+    test("goes on after a finger that leaves at speed", async () => {
+        const page = await openPhone();
+
+        try {
+            await linesAbove(page);
+
+            const atBottom = Number(await firstLine(page));
+
+            // A flick, as fast as a finger on glass makes one.
+            await page.touchscreen.touchStart(200, 300);
+            for (let step = 1; step <= 5; step += 1) {
+                await page.touchscreen.touchMove(200, 300 + step * 40);
+                await new Promise((resolve) => setTimeout(resolve, 16));
+            }
+
+            const whenHeld = Number(await firstLine(page));
+
+            await page.touchscreen.touchEnd();
+            await settle(page, 1500);
+
+            const settled = Number(await firstLine(page));
+
+            // The finger moved the view, and the view went on for lines of its own after it left.
+            expect(atBottom - whenHeld).toBeGreaterThan(2);
+            expect(whenHeld - settled).toBeGreaterThan(4);
+        } finally {
+            await page.close();
+        }
+    }, 30_000);
+
+    /**
+     * The view is the terminal's, not the page's that moved it: a page that opens after the scrolling -- a reload, a tab
+     * that comes back to the app -- has no finger behind the view, so it cannot know that the view is scrolled back. A
+     * key typed there still has to bring the prompt onto the screen.
+     */
+    test("comes back to the prompt on a key after a reload that finds the view scrolled back", async () => {
+        const page = await openPhone();
+
+        try {
+            await linesAbove(page);
+
+            const atBottom = await firstLine(page);
+
+            await scrollBack(page);
+
+            const scrolled = await firstLine(page);
+
+            expect(Number(scrolled)).toBeLessThan(Number(atBottom));
+
+            await page.reload({ waitUntil: "networkidle2" });
+            await page.waitForSelector(".gt-panes .gt-row");
+            await settle(page, 1200);
+
+            // The page that came back has scrolled nothing, and it draws the view that it found.
+            expect(await firstLine(page)).toBe(scrolled);
+
+            await softType(page, "x");
+            await settle(page, 1200);
+
+            expect(Number(await firstLine(page))).toBeGreaterThan(Number(scrolled));
+        } finally {
+            await page.close();
+        }
+    }, 30_000);
+});
+
+describe("the wheel of a laptop", () => {
+    /** A turn of the wheel, as a browser sends one: a notch, or a turn that counts in lines. */
+    const turn = (page: Page, deltaY: number, deltaMode = 0) =>
+        page.evaluate(
+            (dy, mode) => {
+                const screen = document.querySelector(".gt-screen") as HTMLElement;
+
+                screen.dispatchEvent(new WheelEvent("wheel", { deltaY: dy, deltaMode: mode, bubbles: true, cancelable: true }));
+            },
+            deltaY,
+            deltaMode,
+        );
+
+    /**
+     * A wheel may count in lines, and one that does sends 3 for a notch. The page took every count as pixels, and three
+     * pixels is less than a line: the view did not move at all.
+     */
+    test("moves the view by the lines that a wheel counts in", async () => {
+        const page = await openWide();
+
+        try {
+            await linesAbove(page);
+
+            const rows = await page.$$eval(".gt-row", (each) => each.length);
+            const atBottom = Number(await firstLine(page));
+
+            await turn(page, -4, 1);
+            await settle(page, 600);
+
+            // A screen that changed its size moved every line of the view, and the lines that moved are what this test
+            // counts.
+            expect(await page.$$eval(".gt-row", (each) => each.length)).toBe(rows);
+            expect(Number(await firstLine(page))).toBe(atBottom - 4);
+        } finally {
+            await page.close();
+        }
+    }, 30_000);
+
+    /**
+     * A notch of a wheel is six lines at once, and the view drew them in one frame: the screen jumped rather than
+     * scrolled. The notch glides to its lines over the frames that follow.
+     */
+    test("glides to the lines of a notch instead of jumping to them", async () => {
+        const page = await openWide();
+
+        try {
+            await linesAbove(page);
+
+            const atBottom = Number(await firstLine(page));
+
+            // Every line that is first in sight, frame by frame, from the turn until the view has settled.
+            const seen = await page.evaluate(
+                () =>
+                    new Promise<number[]>((resolve) => {
+                        const positions: number[] = [];
+                        const first = () =>
+                            Number(
+                                [...document.querySelectorAll(".gt-row")]
+                                    .map((each) => each.textContent?.trim() ?? "")
+                                    .filter((text) => text !== "")[0],
+                            );
+                        const until = performance.now() + 400;
+
+                        const watch = () => {
+                            positions.push(first());
+
+                            if (performance.now() < until) requestAnimationFrame(watch);
+                            else resolve(positions);
+                        };
+
+                        (document.querySelector(".gt-screen") as HTMLElement).dispatchEvent(
+                            new WheelEvent("wheel", { deltaY: -100, deltaMode: 0, bubbles: true, cancelable: true }),
+                        );
+
+                        requestAnimationFrame(watch);
+                    }),
+            );
+
+            // A jump shows one line at once and then another; a glide passes through the ones between.
+            expect([...new Set(seen)].length).toBeGreaterThanOrEqual(3);
+            expect(Number(await firstLine(page))).toBeLessThan(atBottom);
         } finally {
             await page.close();
         }
@@ -1136,16 +1337,6 @@ describe("the keyboard of a phone", () => {
 });
 
 describe("the row's modifiers", () => {
-    /** A command in the shell, as a person types it: the soft keyboard's own way, which is text and not a key. */
-    const softType = (page: Page, typed: string) =>
-        page.evaluate((text) => {
-            const input = document.querySelector(".gt-input") as HTMLTextAreaElement;
-
-            input.focus();
-            input.value = text;
-            input.dispatchEvent(new InputEvent("input", { bubbles: true }));
-        }, typed);
-
     /**
      * The row's Control, Shift, and Alt arm the next key, and the key that a phone has for a letter is the soft keyboard
      * below the row: it gives the letter as text, never as a key event, so the armed modifier was dropped and ⌃ then `c`
@@ -1193,10 +1384,10 @@ describe("the bar's buttons", () => {
         page.$$eval(selector, (buttons) => buttons.filter((button) => getComputedStyle(button).display !== "none").length);
 
     /**
-     * A phone's panel has no room for six buttons: the shell's own, the way out, and the end keep theirs, and the text's
-     * size waits until the panel is wide enough for it. The rule that folds them away named the button alone, and the
-     * bar's own rule for a button is a class stronger, so a phone drew all six and squeezed the session's name to a
-     * hundred pixels.
+     * A phone's panel has no room for four buttons: the shell's own, and the way out, keep theirs, and the text's size
+     * waits until the panel is wide enough for it. The rule that folds them away named the button alone, and the bar's
+     * own rule for a button is a class stronger, so a phone drew all four and squeezed the session's name to a hundred
+     * pixels.
      */
     test("folds the text's size away in a narrow panel, and keeps it in a wide one", async () => {
         const phone = await openPhone();
@@ -1205,7 +1396,7 @@ describe("the bar's buttons", () => {
         try {
             expect(await drawn(phone, ".gt-font")).toBe(0);
             expect(await drawn(phone, ".gt-restart")).toBe(1);
-            expect(await drawn(phone, ".gt-end")).toBe(1);
+            expect(await drawn(phone, ".gt-surface")).toBe(1);
 
             expect(await drawn(wide, ".gt-font")).toBe(2);
         } finally {
@@ -1300,7 +1491,21 @@ describe("how a shell's end is read", () => {
         const page = await openPanel();
 
         try {
-            await tap(page, ".gt-end");
+            // The app ends a shell through the module, as a conversation that closes the last tab of it does: the exit
+            // leaves no code, which is not a command's status and not a signal. A shell that an earlier test ended is
+            // still listed, and the one that this page shows is the one that is alive.
+            const ended = await page.evaluate(async () => {
+                const list = (await fetch("/api/x/rex/terminals").then((answer) => answer.json())) as {
+                    terminals: Array<{ id: string; alive: boolean }>;
+                };
+                const id = (list.terminals.find((each) => each.alive) ?? list.terminals.at(-1))?.id;
+
+                if (id === undefined) return false;
+
+                return (await fetch(`/api/x/rex/terminals/${id}`, { method: "DELETE" })).ok;
+            });
+
+            expect(ended).toBe(true);
             await closed(page);
 
             expect(await page.$(".gt-note")).toBeNull();
@@ -1439,28 +1644,19 @@ describe("the bar above the screen", () => {
 
                     return button === undefined ? null : button.getBoundingClientRect();
                 };
-                const gap = (left: string, right: string) => {
-                    const one = at(left);
-                    const other = at(right);
-
-                    return one === null || other === null ? null : Math.round((other.left - one.right) * 10) / 10;
-                };
 
                 return {
                     order: buttons.map((each) => each.getAttribute("title")),
-                    button: Math.round(buttons[0]!.getBoundingClientRect().width),
-                    beforeEnd: gap("Larger text", "End"),
-                    endsRight: Math.round(window.innerWidth - at("End")!.right),
+                    lastRight: Math.round(window.innerWidth - buttons.at(-1)!.getBoundingClientRect().right),
                 };
             });
 
             // The buttons about which terminal this is on the left -- a new shell, and another session -- and on the
-            // other side, the text size and the end.
+            // other side, the text size.
             expect(row.order.slice(0, 2)).toEqual(["New shell", "Another session"]);
-            expect(row.order.at(-1)).toBe("End");
-            expect(row.beforeEnd).toBeCloseTo(row.button, 0);
+            expect(row.order.at(-1)).toBe("Larger text");
             // The two groups sit at the two ends of the bar, not gathered at one.
-            expect(row.endsRight).toBeLessThan(20);
+            expect(row.lastRight).toBeLessThan(20);
             expect(row.order.indexOf("Smaller text")).toBeGreaterThan(row.order.indexOf("New shell"));
         } finally {
             await page.close();

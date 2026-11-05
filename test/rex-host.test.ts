@@ -199,9 +199,25 @@ describe("the screen that the module starts", () => {
 
         screen.send({ op: "scroll", to: "top" });
 
-        const top = await screen.wait<Frame>("frame", (each) => each.full && textOf(each).includes("line 0"));
+        const top = await screen.wait<Frame>("frame", (each) => each.seq > drawn.seq);
 
         expect(textOf(top)).toContain("line 0");
+    });
+
+    test("sends no frame for a scroll of the view that is the view already", async () => {
+        const screen = runnerWith(20, 3);
+
+        await screen.wait("ready");
+
+        for (let index = 0; index < 8; index += 1) screen.feed(`line ${index}\r\n`);
+
+        const drawn = await screen.lastFrame();
+
+        // The view is at the prompt already: the scroll has no row to bring into sight, so there is nothing to draw.
+        screen.send({ op: "scroll", to: "bottom" });
+        await Bun.sleep(300);
+
+        expect(screen.events.filter((each) => each.t === "frame" && (each as Frame).seq > drawn.seq)).toEqual([]);
     });
 
     test("answers nothing itself, because the program talks to Rex's terminal and not to this one", async () => {

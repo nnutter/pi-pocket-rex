@@ -147,6 +147,49 @@ test("types text, and sends keys and pastes as the events that a block takes", a
     });
 });
 
+test("puts the view at the prompt before it types, wherever a page left it", async () => {
+    const server = serve();
+    const fake = module(server);
+
+    const { terminal } = await open(fake, server);
+
+    // Rex's own message first, since the stream before it is the snapshot of a screen that no screen takes; then more
+    // lines than the screen's rows, so that the first of them goes above the screen, into the scrollback.
+    server.push(new TextEncoder().encode('\u001b_rex1;7;{"type":"resize"}\u001b\\'));
+    server.push(new TextEncoder().encode(Array.from({ length: 20 }, (_, at) => `line ${at}\r\n`).join("")));
+
+    const drawn = await fake.waitFor<FrameEvent>("frame", (event) => textOf(event.frame).includes("line 19"));
+
+    await fake.call({
+        method: "POST",
+        path: "terminals/:id/scroll",
+        params: { id: terminal.id },
+        body: { to: "top" },
+    });
+
+    const top = await fake.waitFor<FrameEvent>(
+        "frame",
+        (event) => event.frame.seq > drawn.frame.seq && textOf(event.frame).includes("line 0"),
+    );
+
+    expect(textOf(top.frame)).toContain("line 0");
+
+    // A key, from a page that may not be the one that scrolled: what it types goes to a line that is in sight.
+    await fake.call({
+        method: "POST",
+        path: "terminals/:id/input",
+        params: { id: terminal.id },
+        body: { text: "x" },
+    });
+
+    const back = await fake.waitFor<FrameEvent>(
+        "frame",
+        (event) => event.frame.seq > top.frame.seq && textOf(event.frame).includes("line 19"),
+    );
+
+    expect(textOf(back.frame)).toContain("line 19");
+});
+
 test("resizes both the screen and the terminal in Rex", async () => {
     const server = serve();
     const fake = module(server);

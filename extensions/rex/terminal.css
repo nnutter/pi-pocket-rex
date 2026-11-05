@@ -17,20 +17,11 @@
 .gt-bar {
     display: flex;
     align-items: center;
-    /* The shell's own buttons at one end of the bar, the text's size and the end of it at the other. */
+    /* The shell's own buttons at one end of the bar, and the text's size at the other. */
     justify-content: space-between;
     gap: 0.5rem;
     flex: none;
     min-height: 0;
-}
-
-/*
- * A button's width of air, where a group of buttons says that it is another kind of thing than the group beside it. The
- * row's own gap sits on either side of it, so the air it adds is a button less two of those gaps.
- */
-.gt-space {
-    flex: none;
-    width: calc(1.75rem - 0.5rem);
 }
 
 .gt-flash {
@@ -128,6 +119,13 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+
+    /*
+     * A finger that travels down the screen moves the view through the scrollback, and the browser must not take that
+     * gesture for a scroll of the page: a gesture that it takes is one that it stops sending, which left a swipe with a
+     * couple of lines and no more. A pinch does nothing here, since the bar's own buttons are the size of the text.
+     */
+    touch-action: none;
 
     /*
      * JetBrains Mono with Nerd Font's glyphs, which is what an editor's icons are drawn with, and the ligatures that

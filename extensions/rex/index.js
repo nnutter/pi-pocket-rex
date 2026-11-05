@@ -227,7 +227,6 @@ function TerminalPage({ pocket, close, setOpen, surface, onSwitch, target, onCho
     const switchSurface = () => onSwitch(surface);
 
     const restart = () => void view()?.restart();
-    const end = () => void view()?.kill();
 
     useEffect(() => {
         const view = new TerminalView(pocket, {
@@ -312,8 +311,6 @@ function TerminalPage({ pocket, close, setOpen, surface, onSwitch, target, onCho
     // page. The button shows the surface that a tap gives, and says it in its title.
     const PANEL = "M10.25 2.25h1.5v11.5h-1.5z";
     const PAGE = "M2.25 4.75h11.5v1.5H2.25z";
-    const END =
-        "M4.47.22A.749.749 0 0 1 5 0h6c.199 0 .389.079.53.22l4.25 4.25c.141.14.22.331.22.53v6a.749.749 0 0 1-.22.53l-4.25 4.25A.749.749 0 0 1 11 16H5a.749.749 0 0 1-.53-.22L.22 11.53A.749.749 0 0 1 0 11V5c0-.199.079-.389.22-.53Zm.84 1.28L1.5 5.31v5.38l3.81 3.81h5.38l3.81-3.81V5.31L10.69 1.5ZM8 4a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0v-3.5A.75.75 0 0 1 8 4Zm0 8a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z";
 
     const button = (label, title, run, extra = "") => {
         // One press, one action: the press and the click that may follow it share the one guard.
@@ -375,8 +372,6 @@ function TerminalPage({ pocket, close, setOpen, surface, onSwitch, target, onCho
                     : null}
                 ${button(icon(MINUS, GLASS_UNDER), "Smaller text", () => view()?.setFont(-1), "gt-font")}
                 ${button(icon(OVER_PLUS, GLASS_OVER), "Larger text", () => view()?.setFont(1), "gt-font")}
-                <span class="gt-space"></span>
-                ${button(icon(END), "End", end, "gt-end")}
             </div>
         </div>
         <div class="gt-panes">
