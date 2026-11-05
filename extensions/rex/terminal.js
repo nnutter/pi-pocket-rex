@@ -3,6 +3,9 @@
  * textarea that turns keystrokes into the key events that Ghostty's encoder reads.
  */
 
+/** How long a wheel event waits for another one before it is a notch of its own rather than a turn of a trackpad. */
+const NOTCH_MS = 30;
+
 /** The bits of a run's `flags`, as `pty-host.ts` writes them. */
 const BOLD = 1;
 const FAINT = 2;
@@ -235,6 +238,11 @@ export class TerminalView {
     /** When a finger last moved the view: a tap and a selection belong to a finger that stayed. */
     #pannedAt = 0;
     #pendingScroll = 0;
+    /** The distance that a wheel has turned and the view has not moved by yet, in pixels. */
+    #turnPixels = 0;
+    #turnTimer = null;
+    /** When a wheel last turned, so that a notch of its own is told from the stream of a trackpad. */
+    #turnAt = 0;
     /** Whether a scroll of the view is on its way: one is, so that a wheel's turn moves the view in one piece. */
     #scrolling = false;
     /** What resolves when no scroll of the view is on its way. */
@@ -433,7 +441,17 @@ export class TerminalView {
         screen.addEventListener("click", tap);
         screen.addEventListener("wheel", (event) => {
             event.preventDefault();
-            this.#pan(this.#turnedBy(event));
+
+            const pixels = this.#turnedBy(event);
+            const now = performance.now();
+            const notch = now - this.#turnAt > NOTCH_MS && Math.abs(pixels) >= this.#cell.height * 2;
+
+            this.#turnAt = now;
+
+            // A wheel's notch comes by itself, and is a jump of several lines: the view glides to it. A trackpad turns in
+            // a stream of small ones, and a stream that waits its turn is a stream that trails the fingers.
+            if (notch) this.#turn(pixels);
+            else this.#pan(pixels);
         }, { passive: false });
 
         // A finger on the screen moves the view through the scrollback, as a wheel does: a phone has no wheel, and the
@@ -845,6 +863,44 @@ export class TerminalView {
         this.#scroll(lines);
     }
 
+    /**
+     * Turns the view by the distance that a wheel made. A wheel's notch is six lines at once, and a view that took them
+     * all in one frame jumped: the turn is taken a line at a time, on the frames that follow, while a trackpad's turns
+     * make a line as often as they do and reach the view as they come.
+     */
+    #turn(pixels) {
+        if (this.#id === null || this.#destroyed) return;
+
+        if (globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true) {
+            this.#pan(pixels);
+
+            return;
+        }
+
+        this.#turnPixels += pixels;
+        this.#turnSoon();
+    }
+
+    /** Moves the view by one line of what the wheel has turned, on the next frame, and on the ones after while any is left. */
+    #turnSoon() {
+        if (this.#turnTimer !== null || this.#id === null || this.#destroyed) return;
+
+        this.#turnTimer = requestAnimationFrame(() => {
+            this.#turnTimer = null;
+
+            const lines = Math.trunc(this.#turnPixels / this.#cell.height);
+
+            if (lines === 0) return;
+
+            const one = Math.sign(lines) * this.#cell.height;
+
+            this.#turnPixels -= one;
+            this.#pan(one);
+
+            this.#turnSoon();
+        });
+    }
+
     /** The distance that a wheel event turns, in pixels: a wheel may count in lines or in pages, and not only in pixels. */
     #turnedBy(event) {
         if (event.deltaMode === 1) return event.deltaY * this.#cell.height;
@@ -895,6 +951,12 @@ export class TerminalView {
         // cannot know that the view is back, since another page or a reload may have scrolled it. A scroll that this
         // page asked for, and that has not gone yet, would arrive after the module's own and undo it.
         this.#pendingScroll = 0;
+        this.#turnPixels = 0;
+
+        if (this.#turnTimer !== null) {
+            cancelAnimationFrame(this.#turnTimer);
+            this.#turnTimer = null;
+        }
 
         const last = this.#waiting.at(-1);
 
@@ -1188,6 +1250,13 @@ export class TerminalView {
         this.#destroyed = true;
         this.#waiting.length = 0;
         this.#pendingScroll = 0;
+        this.#turnPixels = 0;
+
+        if (this.#turnTimer !== null) {
+            cancelAnimationFrame(this.#turnTimer);
+            this.#turnTimer = null;
+        }
+
         clearTimeout(this.#resizeTimer);
         clearTimeout(this.#flashTimer);
         clearTimeout(this.#bellTimer);

@@ -1237,6 +1237,53 @@ describe("the wheel of a laptop", () => {
         }
     }, 30_000);
 
+    /**
+     * A notch of a wheel is six lines at once, and the view drew them in one frame: the screen jumped rather than
+     * scrolled. The notch glides to its lines over the frames that follow.
+     */
+    test("glides to the lines of a notch instead of jumping to them", async () => {
+        const page = await openWide();
+
+        try {
+            await linesAbove(page);
+
+            const atBottom = Number(await firstLine(page));
+
+            // Every line that is first in sight, frame by frame, from the turn until the view has settled.
+            const seen = await page.evaluate(
+                () =>
+                    new Promise<number[]>((resolve) => {
+                        const positions: number[] = [];
+                        const first = () =>
+                            Number(
+                                [...document.querySelectorAll(".gt-row")]
+                                    .map((each) => each.textContent?.trim() ?? "")
+                                    .filter((text) => text !== "")[0],
+                            );
+                        const until = performance.now() + 400;
+
+                        const watch = () => {
+                            positions.push(first());
+
+                            if (performance.now() < until) requestAnimationFrame(watch);
+                            else resolve(positions);
+                        };
+
+                        (document.querySelector(".gt-screen") as HTMLElement).dispatchEvent(
+                            new WheelEvent("wheel", { deltaY: -100, deltaMode: 0, bubbles: true, cancelable: true }),
+                        );
+
+                        requestAnimationFrame(watch);
+                    }),
+            );
+
+            // A jump shows one line at once and then another; a glide passes through the ones between.
+            expect([...new Set(seen)].length).toBeGreaterThanOrEqual(3);
+            expect(Number(await firstLine(page))).toBeLessThan(atBottom);
+        } finally {
+            await page.close();
+        }
+    }, 30_000);
 });
 
 describe("the row's modifiers", () => {
