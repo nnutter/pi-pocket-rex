@@ -6,6 +6,16 @@
 /** How long a wheel event waits for another one before it is a notch of its own rather than a turn of a trackpad. */
 const NOTCH_MS = 30;
 
+/** The samples of a finger that is moving, and how far back a throw of it is measured: the last quarter second. */
+const THROW_WINDOW_MS = 100;
+
+/** How fast a throw may be, in pixels a millisecond, and how slow it is when the view stops on its own. */
+const THROW_FASTEST = 4;
+const THROW_SLOWEST = 0.03;
+
+/** How long a throw takes to lose most of its speed: its distance is its speed times this. */
+const THROW_MS = 325;
+
 /** The bits of a run's `flags`, as `pty-host.ts` writes them. */
 const BOLD = 1;
 const FAINT = 2;
@@ -242,7 +252,14 @@ export class TerminalView {
     #turnPixels = 0;
     #turnTimer = null;
     /** When a wheel last turned, so that a notch of its own is told from the stream of a trackpad. */
-    #turnAt = 0;    /** Whether a scroll of the view is on its way: one is, so that a wheel's turn moves the view in one piece. */
+    #turnAt = 0;
+    /** The places that a finger has been, and when: what its throw is when it leaves the screen. */
+    #finger = [];
+    /** How fast the view is going after a finger left, in pixels a millisecond, and the frame that carries it. */
+    #throwSpeed = 0;
+    #throwTimer = null;
+    #throwAt = 0;
+    /** Whether a scroll of the view is on its way: one is, so that a wheel's turn moves the view in one piece. */
     #scrolling = false;
     /** What resolves when no scroll of the view is on its way. */
     #scrollIdle = Promise.resolve();
@@ -462,14 +479,19 @@ export class TerminalView {
         screen.addEventListener("touchstart", (event) => {
             if (event.touches.length !== 1) return;
 
+            // A finger that comes down takes the view from a throw of the one before it.
+            this.#stopThrow();
+
             from = event.touches[0].clientY;
             moving = false;
+            this.#finger = [{ at: performance.now(), y: from }];
         }, { passive: true });
 
         screen.addEventListener("touchmove", (event) => {
             if (event.touches.length !== 1) return;
 
             const to = event.touches[0].clientY;
+            const now = performance.now();
 
             // The browser may not take this gesture for a scroll of the page, and it decides before the finger has
             // travelled the little that tells a tap from a swipe: a gesture that it takes is one that it cancels.
@@ -480,9 +502,27 @@ export class TerminalView {
             moving = true;
             this.#pannedAt = Date.now();
 
+            this.#finger.push({ at: now, y: to });
+
+            if (this.#finger.length > 8) this.#finger.shift();
+
             this.#pan(from - to);
             from = to;
         }, { passive: false });
+
+        // The fingers left the glass: the view goes on at the speed of the last of them, as a terminal that is flung
+        // does, rather than stopping on the line where the finger happened to be.
+        screen.addEventListener("touchend", () => {
+            if (!moving) return;
+
+            moving = false;
+            this.#thrown();
+        }, { passive: true });
+
+        screen.addEventListener("touchcancel", () => {
+            moving = false;
+            this.#finger = [];
+        }, { passive: true });
 
         input.addEventListener("keydown", (event) => this.#keys(event, true));
 
@@ -903,6 +943,57 @@ export class TerminalView {
         });
     }
 
+    /** Sets the view going at the speed that the finger left at, or stops it when the finger was still. */
+    #thrown() {
+        const samples = this.#finger;
+        const last = samples.at(-1);
+
+        this.#finger = [];
+
+        if (last === undefined) return;
+
+        const first = samples.find((each) => last.at - each.at <= THROW_WINDOW_MS) ?? last;
+
+        if (first === last) return;
+
+        // Down the screen is a view that goes back through the scrollback, which is what a pan of it is.
+        const speed = (last.y - first.y) / (last.at - first.at);
+
+        if (Math.abs(speed) < THROW_SLOWEST) return;
+
+        this.#throwSpeed = -Math.max(-THROW_FASTEST, Math.min(THROW_FASTEST, speed));
+        this.#throwAt = performance.now();
+        this.#throwTimer = requestAnimationFrame((now) => this.#coast(now));
+    }
+
+    /** Moves the view by what a throw has left, frame by frame, until it is too slow to see. */
+    #coast(now) {
+        this.#throwTimer = null;
+
+        if (this.#destroyed || this.#id === null) return;
+
+        // A frame that took long is a frame that the view moves for, and no more: the throw must not jump.
+        const took = Math.min(now - this.#throwAt, 32);
+
+        this.#throwAt = now;
+        this.#pannedAt = Date.now();
+
+        this.#pan(this.#throwSpeed * took);
+        this.#throwSpeed *= Math.exp(-took / THROW_MS);
+
+        if (Math.abs(this.#throwSpeed) >= THROW_SLOWEST) this.#throwTimer = requestAnimationFrame((next) => this.#coast(next));
+    }
+
+    /** Stops a view that is going after a throw, as a finger that comes down does. */
+    #stopThrow() {
+        this.#throwSpeed = 0;
+
+        if (this.#throwTimer !== null) {
+            cancelAnimationFrame(this.#throwTimer);
+            this.#throwTimer = null;
+        }
+    }
+
     /** The distance that a wheel event turns, in pixels: a wheel may count in lines or in pages, and not only in pixels. */
     #turnedBy(event) {
         if (event.deltaMode === 1) return event.deltaY * this.#cell.height;
@@ -954,6 +1045,8 @@ export class TerminalView {
         // page asked for, and that has not gone yet, would arrive after the module's own and undo it.
         this.#pendingScroll = 0;
         this.#turnPixels = 0;
+        this.#finger = [];
+        this.#stopThrow();
 
         if (this.#turnTimer !== null) {
             cancelAnimationFrame(this.#turnTimer);
@@ -1245,6 +1338,9 @@ export class TerminalView {
             cancelAnimationFrame(this.#turnTimer);
             this.#turnTimer = null;
         }
+
+        this.#finger = [];
+        this.#stopThrow();
 
         clearTimeout(this.#resizeTimer);
         clearTimeout(this.#flashTimer);

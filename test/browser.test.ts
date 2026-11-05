@@ -1179,6 +1179,41 @@ describe("the keyboard of a phone", () => {
     }, 30_000);
 
     /**
+     * A flick of a finger on glass throws the view on after the finger leaves, as the scroll of anything on a tablet
+     * does. A view that stopped on the line where the finger happened to stop moved a couple of lines and stopped with
+     * every swipe.
+     */
+    test("goes on after a finger that leaves at speed", async () => {
+        const page = await openPhone();
+
+        try {
+            await linesAbove(page);
+
+            const atBottom = Number(await firstLine(page));
+
+            // A flick, as fast as a finger on glass makes one.
+            await page.touchscreen.touchStart(200, 300);
+            for (let step = 1; step <= 5; step += 1) {
+                await page.touchscreen.touchMove(200, 300 + step * 40);
+                await new Promise((resolve) => setTimeout(resolve, 16));
+            }
+
+            const whenHeld = Number(await firstLine(page));
+
+            await page.touchscreen.touchEnd();
+            await settle(page, 1500);
+
+            const settled = Number(await firstLine(page));
+
+            // The finger moved the view, and the view went on for lines of its own after it left.
+            expect(atBottom - whenHeld).toBeGreaterThan(2);
+            expect(whenHeld - settled).toBeGreaterThan(4);
+        } finally {
+            await page.close();
+        }
+    }, 30_000);
+
+    /**
      * The view is the terminal's, not the page's that moved it: a page that opens after the scrolling -- a reload, a tab
      * that comes back to the app -- has no finger behind the view, so it cannot know that the view is scrolled back. A
      * key typed there still has to bring the prompt onto the screen.
