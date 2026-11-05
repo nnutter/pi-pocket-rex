@@ -183,6 +183,68 @@ async function freshPrompt(page: Page): Promise<void> {
     await settle(page, 350);
 }
 
+/** A character of the soft keyboard: text that the field takes, and no key event at all. */
+function softType(page: Page, typed: string): Promise<void> {
+    return page.evaluate((text) => {
+        const input = document.querySelector(".gt-input") as HTMLTextAreaElement;
+
+        input.focus();
+        input.value = text;
+        input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    }, typed);
+}
+
+/** The first line in sight on the screen, which says where in the scrollback the view is. */
+function firstLine(page: Page): Promise<string> {
+    return page.evaluate(
+        () =>
+            [...document.querySelectorAll(".gt-row")]
+                .map((row) => row.textContent?.trim() ?? "")
+                .filter((text) => text !== "")[0] ?? "",
+    );
+}
+
+/**
+ * Waits until the screen stops changing its size.
+ *
+ * The page measures the font and the room again after a moment, and a screen that gains or loses a row moves every line
+ * of the view: a test that counts the lines that a scroll moved must not have a resize under it.
+ */
+async function quietScreen(page: Page): Promise<void> {
+    let rows = -1;
+
+    for (let tries = 0; tries < 25; tries += 1) {
+        const now = await page.$$eval(".gt-row", (rows) => rows.length);
+
+        if (now === rows) return;
+
+        rows = now;
+        await settle(page, 200);
+    }
+}
+
+/** Prints enough lines to fill the screen and leave a scrollback, and leaves the view on their last one. */
+async function linesAbove(page: Page): Promise<void> {
+    await softType(page, "clear; seq 1 80\n");
+
+    // The last line of the count, and not the first: a test that watches the view must not see the count arriving.
+    await page.waitForFunction(
+        () => [...document.querySelectorAll(".gt-row")].some((row) => (row.textContent ?? "").trim() === "80"),
+        { timeout: 15_000 },
+    );
+    // The prompt that the count leaves comes after it, and it is not part of the view that a test watches.
+    await settle(page, 400);
+    await quietScreen(page);
+}
+
+/** A finger that travels down the screen: the lines that are above the prompt come into sight. */
+async function scrollBack(page: Page): Promise<void> {
+    await page.touchscreen.touchStart(200, 260);
+    for (let y = 280; y <= 520; y += 20) await page.touchscreen.touchMove(200, y);
+    await page.touchscreen.touchEnd();
+    await settle(page, 1200);
+}
+
 /** A finger on an element: a touch, as a phone sends one. */
 async function tap(page: Page, selector: string): Promise<void> {
     const element = await page.$(selector);
@@ -1028,46 +1090,6 @@ describe("typing into the terminal", () => {
 });
 
 describe("the keyboard of a phone", () => {
-    /** A character of the soft keyboard: text that the field takes, and no key event at all. */
-    const softType = (page: Page, typed: string) =>
-        page.evaluate((text) => {
-            const input = document.querySelector(".gt-input") as HTMLTextAreaElement;
-
-            input.focus();
-            input.value = text;
-            input.dispatchEvent(new InputEvent("input", { bubbles: true }));
-        }, typed);
-
-    /** The first line in sight on the screen, which says where in the scrollback the view is. */
-    const firstLine = (page: Page) =>
-        page.evaluate(
-            () =>
-                [...document.querySelectorAll(".gt-row")]
-                    .map((row) => row.textContent?.trim() ?? "")
-                    .filter((text) => text !== "")[0] ?? "",
-        );
-
-    /** Prints enough lines to fill the screen and leave a scrollback, and leaves the view on their last one. */
-    const linesAbove = async (page: Page) => {
-        await softType(page, "clear; seq 1 80\n");
-        await page.waitForFunction(
-            () =>
-                Number(
-                    [...document.querySelectorAll(".gt-row")]
-                        .map((row) => row.textContent?.trim() ?? "")
-                        .filter((text) => text !== "")[0],
-                ) > 1,
-            { timeout: 15_000 },
-        );
-    };
-
-    /** A finger that travels down the screen: the lines that are above the prompt come into sight. */
-    const scrollBack = async (page: Page) => {
-        await page.touchscreen.touchStart(200, 260);
-        for (let y = 280; y <= 520; y += 20) await page.touchscreen.touchMove(200, y);
-        await page.touchscreen.touchEnd();
-        await settle(page, 1200);
-    };
     /**
      * A soft keyboard's backspace deletes a character of the field that the keys go through, and a field that is empty
      * after every keystroke has nothing to delete: the delete was no event at all, and holding the key repeated nothing.
@@ -1177,17 +1199,47 @@ describe("the keyboard of a phone", () => {
     }, 30_000);
 });
 
+describe("the wheel of a laptop", () => {
+    /** A turn of the wheel, as a browser sends one: a notch, or a turn that counts in lines. */
+    const turn = (page: Page, deltaY: number, deltaMode = 0) =>
+        page.evaluate(
+            (dy, mode) => {
+                const screen = document.querySelector(".gt-screen") as HTMLElement;
+
+                screen.dispatchEvent(new WheelEvent("wheel", { deltaY: dy, deltaMode: mode, bubbles: true, cancelable: true }));
+            },
+            deltaY,
+            deltaMode,
+        );
+
+    /**
+     * A wheel may count in lines, and one that does sends 3 for a notch. The page took every count as pixels, and three
+     * pixels is less than a line: the view did not move at all.
+     */
+    test("moves the view by the lines that a wheel counts in", async () => {
+        const page = await openWide();
+
+        try {
+            await linesAbove(page);
+
+            const rows = await page.$$eval(".gt-row", (each) => each.length);
+            const atBottom = Number(await firstLine(page));
+
+            await turn(page, -4, 1);
+            await settle(page, 600);
+
+            // A screen that changed its size moved every line of the view, and the lines that moved are what this test
+            // counts.
+            expect(await page.$$eval(".gt-row", (each) => each.length)).toBe(rows);
+            expect(Number(await firstLine(page))).toBe(atBottom - 4);
+        } finally {
+            await page.close();
+        }
+    }, 30_000);
+
+});
+
 describe("the row's modifiers", () => {
-    /** A command in the shell, as a person types it: the soft keyboard's own way, which is text and not a key. */
-    const softType = (page: Page, typed: string) =>
-        page.evaluate((text) => {
-            const input = document.querySelector(".gt-input") as HTMLTextAreaElement;
-
-            input.focus();
-            input.value = text;
-            input.dispatchEvent(new InputEvent("input", { bubbles: true }));
-        }, typed);
-
     /**
      * The row's Control, Shift, and Alt arm the next key, and the key that a phone has for a letter is the soft keyboard
      * below the row: it gives the letter as text, never as a key event, so the armed modifier was dropped and ⌃ then `c`

@@ -18,7 +18,7 @@
     "version": "0.1.0",
     "source": {
         "repo": "nnutter/pi-pocket-rex",
-        "commit": "6e8c82eaffab4c7753db2340632cfae5929faa9b",
+        "commit": "537867747fc5a7b600895187a97b4d5bf033686a",
         "path": "extensions"
     },
     "files": [
@@ -39,8 +39,8 @@
         },
         {
             "name": "rex/terminal.js",
-            "sha256": "64ca1dd8e0460f1a740b8b86361c79ce4bd89ccd2582ace55a8f7583ea962377",
-            "size": 44921
+            "sha256": "c35a29262c10ca6be00fd702efa96dbccb8ebbc75b32b4f4d80cceec31dff45c",
+            "size": 46044
         },
         {
             "name": "rex/picker.js",

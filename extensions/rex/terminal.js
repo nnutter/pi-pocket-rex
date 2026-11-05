@@ -228,7 +228,6 @@ export class TerminalView {
     #resizeTimer = null;
     #opening = false;
     #destroyed = false;
-    #scrollTimer = null;
     #flashTimer = null;
     #bellTimer = null;
     /** The distance that a wheel or a finger has moved, less than a line of it. */
@@ -236,6 +235,10 @@ export class TerminalView {
     /** When a finger last moved the view: a tap and a selection belong to a finger that stayed. */
     #pannedAt = 0;
     #pendingScroll = 0;
+    /** Whether a scroll of the view is on its way: one is, so that a wheel's turn moves the view in one piece. */
+    #scrolling = false;
+    /** What resolves when no scroll of the view is on its way. */
+    #scrollIdle = Promise.resolve();
     /** What has not been sent to the terminal yet, oldest first. */
     #waiting = [];
     /** Whether a request of the queue is on its way: only one is, so that the order of what a person did is kept. */
@@ -430,7 +433,7 @@ export class TerminalView {
         screen.addEventListener("click", tap);
         screen.addEventListener("wheel", (event) => {
             event.preventDefault();
-            this.#pan(event.deltaY);
+            this.#pan(this.#turnedBy(event));
         }, { passive: false });
 
         // A finger on the screen moves the view through the scrollback, as a wheel does: a phone has no wheel, and the
@@ -842,19 +845,40 @@ export class TerminalView {
         this.#scroll(lines);
     }
 
-    /** Moves the view back through the scrollback: the lines of a wheel's turn, taken together, one call each 40 ms. */
+    /** The distance that a wheel event turns, in pixels: a wheel may count in lines or in pages, and not only in pixels. */
+    #turnedBy(event) {
+        if (event.deltaMode === 1) return event.deltaY * this.#cell.height;
+        if (event.deltaMode === 2) return event.deltaY * this.#cell.height * this.#rows;
+
+        return event.deltaY;
+    }
+
+    /**
+     * Moves the view through the scrollback: asked for as soon as it is asked for, and one request on its way at a time,
+     * so that a wheel's turn moves the view as it comes rather than in one piece after a wait.
+     */
     #scroll(lines) {
         if (this.#id === null || this.#destroyed) return;
 
         this.#pendingScroll += lines;
-        clearTimeout(this.#scrollTimer);
-        this.#scrollTimer = setTimeout(() => {
-            const moves = this.#pendingScroll;
 
-            this.#pendingScroll = 0;
+        if (this.#scrolling) return;
 
-            if (moves !== 0) this.#pocket.api(`terminals/${this.#id}/scroll`, { lines: moves }).catch(() => {});
-        }, 40);
+        this.#scrolling = true;
+        this.#scrollIdle = this.#flushScroll();
+    }
+
+    /** Sends the lines that the view has not moved by yet, until none is left. */
+    async #flushScroll() {
+        try {
+            for (let lines = this.#pendingScroll; lines !== 0; lines = this.#pendingScroll) {
+                this.#pendingScroll = 0;
+
+                await this.#pocket.api(`terminals/${this.#id}/scroll`, { lines }).catch(() => {});
+            }
+        } finally {
+            this.#scrolling = false;
+        }
     }
 
     /**
@@ -871,7 +895,6 @@ export class TerminalView {
         // cannot know that the view is back, since another page or a reload may have scrolled it. A scroll that this
         // page asked for, and that has not gone yet, would arrive after the module's own and undo it.
         this.#pendingScroll = 0;
-        clearTimeout(this.#scrollTimer);
 
         const last = this.#waiting.at(-1);
 
@@ -891,6 +914,9 @@ export class TerminalView {
 
         try {
             for (let body = this.#waiting.shift(); body !== undefined; body = this.#waiting.shift()) {
+                // A scroll of the view that is on its way would land after what is typed, and move the view off the
+                // prompt that the module has just put it on.
+                await this.#scrollIdle;
                 const path = body.paste === undefined ? "input" : "paste";
                 const sent = body.paste === undefined ? body : { text: body.paste };
 
@@ -1161,8 +1187,8 @@ export class TerminalView {
     destroy() {
         this.#destroyed = true;
         this.#waiting.length = 0;
+        this.#pendingScroll = 0;
         clearTimeout(this.#resizeTimer);
-        clearTimeout(this.#scrollTimer);
         clearTimeout(this.#flashTimer);
         clearTimeout(this.#bellTimer);
         clearTimeout(this.#focusTimer);
