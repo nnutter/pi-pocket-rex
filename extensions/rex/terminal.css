@@ -17,20 +17,11 @@
 .gt-bar {
     display: flex;
     align-items: center;
-    /* The shell's own buttons at one end of the bar, the text's size and the end of it at the other. */
+    /* The shell's own buttons at one end of the bar, and the text's size at the other. */
     justify-content: space-between;
     gap: 0.5rem;
     flex: none;
     min-height: 0;
-}
-
-/*
- * A button's width of air, where a group of buttons says that it is another kind of thing than the group beside it. The
- * row's own gap sits on either side of it, so the air it adds is a button less two of those gaps.
- */
-.gt-space {
-    flex: none;
-    width: calc(1.75rem - 0.5rem);
 }
 
 .gt-flash {

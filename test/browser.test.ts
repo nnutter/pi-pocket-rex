@@ -1334,10 +1334,10 @@ describe("the bar's buttons", () => {
         page.$$eval(selector, (buttons) => buttons.filter((button) => getComputedStyle(button).display !== "none").length);
 
     /**
-     * A phone's panel has no room for six buttons: the shell's own, the way out, and the end keep theirs, and the text's
-     * size waits until the panel is wide enough for it. The rule that folds them away named the button alone, and the
-     * bar's own rule for a button is a class stronger, so a phone drew all six and squeezed the session's name to a
-     * hundred pixels.
+     * A phone's panel has no room for four buttons: the shell's own, and the way out, keep theirs, and the text's size
+     * waits until the panel is wide enough for it. The rule that folds them away named the button alone, and the bar's
+     * own rule for a button is a class stronger, so a phone drew all four and squeezed the session's name to a hundred
+     * pixels.
      */
     test("folds the text's size away in a narrow panel, and keeps it in a wide one", async () => {
         const phone = await openPhone();
@@ -1346,7 +1346,7 @@ describe("the bar's buttons", () => {
         try {
             expect(await drawn(phone, ".gt-font")).toBe(0);
             expect(await drawn(phone, ".gt-restart")).toBe(1);
-            expect(await drawn(phone, ".gt-end")).toBe(1);
+            expect(await drawn(phone, ".gt-surface")).toBe(1);
 
             expect(await drawn(wide, ".gt-font")).toBe(2);
         } finally {
@@ -1441,7 +1441,21 @@ describe("how a shell's end is read", () => {
         const page = await openPanel();
 
         try {
-            await tap(page, ".gt-end");
+            // The app ends a shell through the module, as a conversation that closes the last tab of it does: the exit
+            // leaves no code, which is not a command's status and not a signal. A shell that an earlier test ended is
+            // still listed, and the one that this page shows is the one that is alive.
+            const ended = await page.evaluate(async () => {
+                const list = (await fetch("/api/x/rex/terminals").then((answer) => answer.json())) as {
+                    terminals: Array<{ id: string; alive: boolean }>;
+                };
+                const id = (list.terminals.find((each) => each.alive) ?? list.terminals.at(-1))?.id;
+
+                if (id === undefined) return false;
+
+                return (await fetch(`/api/x/rex/terminals/${id}`, { method: "DELETE" })).ok;
+            });
+
+            expect(ended).toBe(true);
             await closed(page);
 
             expect(await page.$(".gt-note")).toBeNull();
@@ -1580,28 +1594,19 @@ describe("the bar above the screen", () => {
 
                     return button === undefined ? null : button.getBoundingClientRect();
                 };
-                const gap = (left: string, right: string) => {
-                    const one = at(left);
-                    const other = at(right);
-
-                    return one === null || other === null ? null : Math.round((other.left - one.right) * 10) / 10;
-                };
 
                 return {
                     order: buttons.map((each) => each.getAttribute("title")),
-                    button: Math.round(buttons[0]!.getBoundingClientRect().width),
-                    beforeEnd: gap("Larger text", "End"),
-                    endsRight: Math.round(window.innerWidth - at("End")!.right),
+                    lastRight: Math.round(window.innerWidth - buttons.at(-1)!.getBoundingClientRect().right),
                 };
             });
 
             // The buttons about which terminal this is on the left -- a new shell, and another session -- and on the
-            // other side, the text size and the end.
+            // other side, the text size.
             expect(row.order.slice(0, 2)).toEqual(["New shell", "Another session"]);
-            expect(row.order.at(-1)).toBe("End");
-            expect(row.beforeEnd).toBeCloseTo(row.button, 0);
+            expect(row.order.at(-1)).toBe("Larger text");
             // The two groups sit at the two ends of the bar, not gathered at one.
-            expect(row.endsRight).toBeLessThan(20);
+            expect(row.lastRight).toBeLessThan(20);
             expect(row.order.indexOf("Smaller text")).toBeGreaterThan(row.order.indexOf("New shell"));
         } finally {
             await page.close();

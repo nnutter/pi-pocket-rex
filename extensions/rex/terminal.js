@@ -1136,19 +1136,6 @@ export class TerminalView {
         await this.open(true);
     }
 
-    /** Ends the shell and leaves the screen as it is. */
-    async kill() {
-        const id = this.#id;
-
-        if (id === null) return;
-
-        try {
-            await this.#pocket.api(`terminals/${id}`, undefined, { method: "DELETE" });
-        } catch (failure) {
-            this.#publish({ error: failure.message });
-        }
-    }
-
     setFont(delta) {
         this.#font = Math.max(9, Math.min(22, this.#font + delta));
         globalThis.localStorage?.setItem("x.rex.font", String(this.#font));
