@@ -16,6 +16,10 @@ import { fakeWeb, type FakeWeb } from "../test/fake-web.ts";
 
 const root = join(import.meta.dir, "..");
 
+// The module keeps the sessions that it made in Pi Pocket's data folder, and the preview is not Pi Pocket. A folder of
+// its own keeps the sessions of a preview out of what the person's own module cleans up.
+process.env.PI_POCKET_DIR = mkdtempSync(join(tmpdir(), "rex-preview-data-"));
+
 /** Where Pi Pocket keeps its own fonts, found through the link that the drop-in folder has to its packages. */
 const appFonts = join(
     dirname(realpathSync(join(homedir(), ".pi-pocket", "extensions", "node_modules"))),

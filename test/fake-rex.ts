@@ -37,7 +37,7 @@ export interface FakeRexOptions {
     welcome?: boolean;
     sessions?: FakeSession[];
     hosts?: FakeHost[];
-    /** The blocks that `session.list_blocks` reports. */
+    /** The blocks that `session.list_blocks` reports, for a session that this server did not make. */
     blocks?: Array<{ block_id: string; creator_name?: string; label?: string }>;
     /** What `com.superlogical.terminal.format` paints: the screen that a terminal opens on. */
     screen?: string;
@@ -174,11 +174,46 @@ export function fakeRex(options: FakeRexOptions = {}): FakeRex {
     const closed = new Set<string>();
     const gone = new Set<string>();
 
+    /** The sessions that the connection is attached to, which every method that takes one needs. */
+    const attached = new Set<string>();
+
+    /** The sessions that this server reports: the ones a test named, the ones it made, minus the ones that went. */
+    const listed = (): FakeSession[] => [...(options.sessions ?? []), ...made].filter((each) => !gone.has(each.session_id));
+
+    /** The session that a call names, as Rex treats it: it must be there, and the connection must be attached to it. */
+    function attachedTo(payload: unknown): string {
+        const sessionId = (payload as { session_id?: string }).session_id ?? "";
+
+        if (!listed().some((each) => each.session_id === sessionId)) {
+            throw new RexCallError("session_not_found", `No session ${sessionId}`, 404);
+        }
+
+        if (!attached.has(sessionId)) {
+            throw new RexCallError("conflict", `stream is not attached to session ${sessionId}`, 409);
+        }
+
+        return sessionId;
+    }
+
     function resolve(method: string, payload: unknown): unknown {
         if (options.answer !== undefined) return options.answer(method, payload);
 
-        if (method === "session.list") {
-            return { sessions: [...(options.sessions ?? []), ...made].filter((each) => !gone.has(each.session_id)) };
+        if (method === "session.list") return { sessions: listed() };
+        if (method === "session.attach") {
+            const sessionId = (payload as { session_id?: string }).session_id ?? "";
+
+            if (!listed().some((each) => each.session_id === sessionId)) {
+                throw new RexCallError("session_not_found", `No session ${sessionId}`, 404);
+            }
+
+            attached.add(sessionId);
+
+            return { client_id: "client:fake", seq: 0 };
+        }
+        if (method === "session.detach") {
+            attached.delete((payload as { session_id?: string }).session_id ?? "");
+
+            return {};
         }
         if (method === "block.close") {
             const asked = payload as { block_id?: string };
@@ -188,7 +223,10 @@ export function fakeRex(options: FakeRexOptions = {}): FakeRex {
             return { block_id: asked.block_id, revision: 1 };
         }
         if (method === "session.destroy") {
-            gone.add((payload as { session_id?: string }).session_id ?? "");
+            const sessionId = attachedTo(payload);
+
+            attached.delete(sessionId);
+            gone.add(sessionId);
 
             return {};
         }
@@ -203,10 +241,10 @@ export function fakeRex(options: FakeRexOptions = {}): FakeRex {
         if (method === "hosts.list") return { hosts: options.hosts ?? [] };
         if (method === "data.connect") return { ticket: Buffer.alloc(16, 9).toString("base64url"), expires_in_ms: 60_000 };
         if (method === "session.list_blocks") {
-            const asked = payload as { session_id?: string };
+            const sessionId = attachedTo(payload);
             const kept = <T extends { block_id: string }>(blocks: T[]) => blocks.filter((each) => !closed.has(each.block_id));
 
-            if (made.some((each) => each.session_id === asked.session_id)) {
+            if (made.some((each) => each.session_id === sessionId)) {
                 return { blocks: kept([{ block_id: "block:made", creator_name: "com.superlogical.terminal" }]) };
             }
 

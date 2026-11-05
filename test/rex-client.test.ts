@@ -32,7 +32,8 @@ afterEach(() => {
 });
 
 function serve(options: Parameters<typeof fakeRex>[0] = {}) {
-    const server = fakeRex(options);
+    // The tests that attach to a session name this one, and a fake that a session can attach to is a fake that lists it.
+    const server = fakeRex({ sessions: [{ session_id: "session:1", label: "work" }], ...options });
 
     open.push(server);
 

@@ -147,6 +147,17 @@ behind.
 A session that still holds a block stays: an editor, or a program that a person started in Rex beside the shell. A
 reload is a goodbye and a hello a moment apart, so the module waits ten seconds before it ends anything.
 
+A tab that **dies** — a crashed browser, a phone that lost its network, a Pi Pocket that a restart took — says no
+goodbye, and would leave its session behind for good. So the module writes down the sessions that it makes, in
+`~/.pi-pocket/rex/made.json` (`PI_POCKET_DIR` moves the folder), and a tab that says hello is the moment that it looks at
+them: every session in that file that holds no block is destroyed. Whether a client has the session open says nothing
+about a person's work, because Rex.app stays attached to every session there is, so an empty one is a leftover. A look
+waits a minute before the next one, since a reload is a hello too.
+
+Nothing outside that file is ever destroyed: a session that Rex.app made, or that a person made with the Rex CLI, is not
+the module's to end, however empty it is. A session that Pi Pocket made before this list existed is left as it is, and
+`rex session ls` and `rex session kill <id>` are the way to clear one.
+
 ## The font
 
 The screen draws with **JetBrains Mono, with Nerd Font's glyphs**, and with the font's ligatures. Nothing is bundled,
