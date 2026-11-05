@@ -18,14 +18,14 @@
     "version": "0.1.0",
     "source": {
         "repo": "nnutter/pi-pocket-rex",
-        "commit": "4582582af8ba7a5be7e361f3c80bdc392403f973",
+        "commit": "2a68030721edb788ae81cb40c61506a6c3d4632a",
         "path": "extensions"
     },
     "files": [
         {
             "name": "rex.ts",
-            "sha256": "e18c574c947bbbab981fd906846b06ad5641f67303f678017b94a458fbdc544c",
-            "size": 49981
+            "sha256": "a8b646c88e21c6f12a1254cc685e5f6bf73815e6a65bf5f55825776b338416c5",
+            "size": 50410
         },
         {
             "name": "_rex-client.ts",

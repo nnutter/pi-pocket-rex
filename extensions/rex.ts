@@ -14,7 +14,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { delimiter, join } from "node:path";
-import { RexClient, RexStream, RexMessageFilter } from "./_rex-client.ts";
+import { RexCallError, RexClient, RexStream, RexMessageFilter } from "./_rex-client.ts";
 import type { Host, Web, WebRequest, WebSession } from "./_pocket.d.ts";
 
 /**
@@ -844,6 +844,29 @@ export default function createRex(_host: Host | null, web: Web) {
     }
 
     /**
+     * Destroys a session that holds no block, and says whether it is gone: this call destroyed it, or Rex no longer had
+     * it.
+     *
+     * A session that cannot be asked is left alone, and so is one that Rex refused to destroy: an empty session in Rex
+     * is better than a session that a call which failed cannot tell from one that another program is using.
+     */
+    async function destroyIfEmpty(client: RexClient, sessionId: string): Promise<boolean> {
+        const left = await client
+            .call<{ blocks?: Array<{ block_id?: string | null }> | null }>("session.list_blocks", { session_id: sessionId })
+            .catch(() => null);
+
+        if (left === null || (left.blocks ?? []).length > 0) return false;
+
+        try {
+            await client.call("session.destroy", { session_id: sessionId });
+
+            return true;
+        } catch (error) {
+            return error instanceof RexCallError && error.code === "session_not_found";
+        }
+    }
+
+    /**
      * Ends what no tab is watching: every block that this module opened is closed, and a session that is left with no
      * block goes with it.
      *
@@ -870,17 +893,7 @@ export default function createRex(_host: Host | null, web: Web) {
         }
 
         for (const terminal of sessions.values()) {
-            const left = await terminal.client
-                .call<{ blocks?: Array<{ block_id?: string | null }> | null }>("session.list_blocks", {
-                    session_id: terminal.sessionId,
-                })
-                .catch(() => null);
-
-            // A session that cannot be asked is left alone: an empty session in Rex is better than a session that a
-            // call which failed cannot tell from one that another program is using.
-            if (left === null || (left.blocks ?? []).length > 0) continue;
-
-            await terminal.client.call("session.destroy", { session_id: terminal.sessionId }).catch(() => {});
+            await destroyIfEmpty(terminal.client, terminal.sessionId);
         }
     }
 
