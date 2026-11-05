@@ -588,4 +588,86 @@ describe("the tabs of the app", () => {
 
         expect(methods(server)).not.toContain("block.close");
     }, 30_000);
+
+    /**
+     * A tab that dies says no goodbye, so the session that it left with no block in it stays in Rex until something
+     * looks for it. The next tab that says hello is that look, and it ends only what this module made.
+     */
+    test("ends the session that a tab which died left empty, when the next tab says hello", async () => {
+        const server = serve({ blocks: [] });
+        const fake = module(server, { ledger: { [server.url]: ["session:1"] } });
+
+        server.requests.length = 0;
+
+        await said(fake, "tabs", { tab: "phone" });
+        await until(server, "session.destroy");
+
+        expect(server.requests.find((each) => each.method === "session.destroy")).toMatchObject({
+            payload: { session_id: "session:1" },
+        });
+        expect(ledgerOf(fake.state)).toEqual({});
+    }, 30_000);
+
+    test("leaves a session that still holds a block", async () => {
+        const server = serve();
+        const fake = module(server, { ledger: { [server.url]: ["session:1"] } });
+
+        await said(fake, "tabs", { tab: "phone" });
+        await until(server, "session.detach");
+
+        expect(methods(server)).not.toContain("session.destroy");
+        expect(ledgerOf(fake.state)).toEqual({ [server.url]: ["session:1"] });
+    }, 30_000);
+
+    test("leaves an empty session that it did not make", async () => {
+        const server = serve({ blocks: [] });
+        const fake = module(server);
+
+        await said(fake, "tabs", { tab: "phone" });
+        await Bun.sleep(300);
+
+        // Nothing in the ledger is nothing to look at, so not even the session that a person made is asked about.
+        expect(methods(server)).not.toContain("session.attach");
+        expect(methods(server)).not.toContain("session.destroy");
+    }, 30_000);
+
+    test("forgets a session that Rex no longer has", async () => {
+        const server = serve({ sessions: [] });
+        const fake = module(server, { ledger: { [server.url]: ["session:gone"] } });
+
+        await said(fake, "tabs", { tab: "phone" });
+        await Bun.sleep(300);
+
+        expect(methods(server)).not.toContain("session.destroy");
+        expect(ledgerOf(fake.state)).toEqual({});
+    }, 30_000);
+
+    test("leaves the session that a terminal of its own is in", async () => {
+        const server = serve();
+        const fake = module(server, { ledger: { [server.url]: ["session:1"] } });
+
+        await open(fake, server);
+        server.requests.length = 0;
+
+        await said(fake, "tabs", { tab: "phone" });
+        await Bun.sleep(300);
+
+        // The terminal is in it, so the session is this module's to keep, whatever the ledger says.
+        expect(methods(server)).not.toContain("session.attach");
+        expect(methods(server)).not.toContain("session.detach");
+    }, 30_000);
+
+    test("looks at the ledger once, however many tabs say hello", async () => {
+        const server = serve();
+        const fake = module(server, { ledger: { [server.url]: ["session:1"] } });
+
+        await said(fake, "tabs", { tab: "phone" });
+        await until(server, "session.detach");
+
+        server.requests.length = 0;
+        await said(fake, "tabs", { tab: "laptop" });
+        await Bun.sleep(300);
+
+        expect(methods(server)).not.toContain("session.attach");
+    }, 30_000);
 });

@@ -54,6 +54,9 @@ const RUNNER_START_MS = 10_000;
 /** How long a tab that said goodbye waits for another tab to come back: a reload is a goodbye and a hello. */
 const TAB_GRACE_MS = 10_000;
 
+/** How long a look at the ledger waits before it looks again: a page that reloads twice is one look's worth of work. */
+const SWEEP_EVERY_MS = 60_000;
+
 /** The file that names the sessions that this module made, under Pi Pocket's data folder. */
 const MADE_FILE = "made.json";
 
@@ -108,6 +111,9 @@ export default function createRex(_host: Host | null, web: Web) {
 
     /** The goodbye that waits for a tab to come back, while one waits. */
     let leaving: ReturnType<typeof setTimeout> | null = null;
+
+    /** When the ledger was last looked at, so that a run of hellos is one look. */
+    let sweptAt = 0;
 
     /** Pi Pocket's data folder, which a person can move with `PI_POCKET_DIR`: where a module keeps what it remembers. */
     const dataFolder = (process.env.PI_POCKET_DIR ?? "").trim() || join(homedir(), ".pi-pocket");
@@ -921,23 +927,35 @@ export default function createRex(_host: Host | null, web: Web) {
      * Destroys a session that holds no block, and says whether it is gone: this call destroyed it, or Rex no longer had
      * it.
      *
-     * A session that cannot be asked is left alone, and so is one that Rex refused to destroy: an empty session in Rex
-     * is better than a session that a call which failed cannot tell from one that another program is using.
+     * A session that cannot be asked is left alone: an empty session in Rex is better than a session that a call which
+     * failed cannot tell from one that another program is using. The connection steps out of a session that stays, so
+     * that a look at one does not leave the module among the viewers that Rex shows.
      */
     async function destroyIfEmpty(client: RexClient, sessionId: string): Promise<boolean> {
+        try {
+            await client.call("session.attach", { session_id: sessionId });
+        } catch (error) {
+            // A session that Rex no longer has is as gone as one that this call destroys.
+            return error instanceof RexCallError && error.code === "session_not_found";
+        }
+
         const left = await client
             .call<{ blocks?: Array<{ block_id?: string | null }> | null }>("session.list_blocks", { session_id: sessionId })
             .catch(() => null);
 
-        if (left === null || (left.blocks ?? []).length > 0) return false;
+        if (left !== null && (left.blocks ?? []).length === 0) {
+            try {
+                await client.call("session.destroy", { session_id: sessionId });
 
-        try {
-            await client.call("session.destroy", { session_id: sessionId });
-
-            return true;
-        } catch (error) {
-            return error instanceof RexCallError && error.code === "session_not_found";
+                return true;
+            } catch (error) {
+                return error instanceof RexCallError && error.code === "session_not_found";
+            }
         }
+
+        await client.call("session.detach", { session_id: sessionId }).catch(() => {});
+
+        return false;
     }
 
     /**
@@ -969,6 +987,59 @@ export default function createRex(_host: Host | null, web: Web) {
         for (const terminal of sessions.values()) {
             if (await destroyIfEmpty(terminal.client, terminal.sessionId)) forget(terminal.hostKey, terminal.sessionId);
         }
+    }
+
+    /**
+     * Ends what a tab that died left in Rex: the sessions that this module made and that hold no block any more.
+     *
+     * A tab that goes says goodbye, and letGo ends what it was watching. A tab that dies says nothing, so the module
+     * finds its own sessions again the next time that one says hello, and closes the ones that are empty by then. What
+     * it leaves alone is a session that still holds a block, and a session that this module holds a terminal of: a
+     * session is empty only once the block that the module opened has closed.
+     */
+    async function sweep(): Promise<void> {
+        let changed = false;
+
+        for (const host of await hostList()) {
+            const ids = ledger.get(host.key);
+
+            if (ids === undefined || ids.size === 0) continue;
+
+            try {
+                const client = await online(host);
+
+                for (const id of [...ids]) {
+                    if (held(host.key, id)) continue;
+
+                    if (await destroyIfEmpty(client, id)) {
+                        ids.delete(id);
+                        changed = true;
+                    }
+                }
+            } catch {
+                // A machine that cannot be asked keeps what it has: an empty session in Rex is better than a guess about
+                // a session that a person may be using.
+            }
+        }
+
+        if (changed) saveLedger();
+    }
+
+    /** Whether this module holds a terminal of the session, whether that terminal is still running or not. */
+    function held(hostKey: string, sessionId: string): boolean {
+        for (const terminal of terminals.values()) {
+            if (terminal.hostKey === hostKey && terminal.sessionId === sessionId) return true;
+        }
+
+        return false;
+    }
+
+    /** Looks at the ledger, unless it looked a moment ago: a page that reloads is a hello, not a reason to ask again. */
+    function look(): void {
+        if (Date.now() - sweptAt < SWEEP_EVERY_MS) return;
+
+        sweptAt = Date.now();
+        void sweep().catch(() => {});
     }
 
     /** Waits a moment for a tab to come back before ending what the last one was watching. */
@@ -1029,6 +1100,9 @@ export default function createRex(_host: Host | null, web: Web) {
                 clearTimeout(leaving);
                 leaving = null;
             }
+
+            // A tab that is here is the first news of a tab that died, whose sessions nothing has closed yet.
+            look();
         }
 
         return { ok: true };
