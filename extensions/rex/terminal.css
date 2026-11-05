@@ -121,6 +121,13 @@
     overflow: hidden;
 
     /*
+     * A finger that travels down the screen moves the view through the scrollback, and the browser must not take that
+     * gesture for a scroll of the page: a gesture that it takes is one that it stops sending, which left a swipe with a
+     * couple of lines and no more. A pinch does nothing here, since the bar's own buttons are the size of the text.
+     */
+    touch-action: none;
+
+    /*
      * JetBrains Mono with Nerd Font's glyphs, which is what an editor's icons are drawn with, and the ligatures that
      * its arrows and comparisons are drawn as.
      *

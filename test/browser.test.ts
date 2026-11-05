@@ -1164,6 +1164,21 @@ describe("the keyboard of a phone", () => {
     }, 30_000);
 
     /**
+     * A finger that travels down the screen moves the view through the scrollback, and the browser must not take that
+     * gesture for a scroll of the page: a gesture that it takes is one that it stops sending, and an iPad's swipe moved
+     * a couple of lines and stopped with every one of them.
+     */
+    test("keeps the swipe of a finger for its own view, and not the page's", async () => {
+        const page = await openPhone();
+
+        try {
+            expect(await page.$eval(".gt-screen", (screen) => getComputedStyle(screen).touchAction)).toBe("none");
+        } finally {
+            await page.close();
+        }
+    }, 30_000);
+
+    /**
      * The view is the terminal's, not the page's that moved it: a page that opens after the scrolling -- a reload, a tab
      * that comes back to the app -- has no finger behind the view, so it cannot know that the view is scrolled back. A
      * key typed there still has to bring the prompt onto the screen.

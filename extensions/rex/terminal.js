@@ -242,8 +242,7 @@ export class TerminalView {
     #turnPixels = 0;
     #turnTimer = null;
     /** When a wheel last turned, so that a notch of its own is told from the stream of a trackpad. */
-    #turnAt = 0;
-    /** Whether a scroll of the view is on its way: one is, so that a wheel's turn moves the view in one piece. */
+    #turnAt = 0;    /** Whether a scroll of the view is on its way: one is, so that a wheel's turn moves the view in one piece. */
     #scrolling = false;
     /** What resolves when no scroll of the view is on its way. */
     #scrollIdle = Promise.resolve();
@@ -472,12 +471,15 @@ export class TerminalView {
 
             const to = event.touches[0].clientY;
 
+            // The browser may not take this gesture for a scroll of the page, and it decides before the finger has
+            // travelled the little that tells a tap from a swipe: a gesture that it takes is one that it cancels.
+            event.preventDefault();
+
             if (!moving && Math.abs(to - from) < 8) return;
 
             moving = true;
             this.#pannedAt = Date.now();
 
-            event.preventDefault();
             this.#pan(from - to);
             from = to;
         }, { passive: false });
