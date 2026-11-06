@@ -1062,8 +1062,8 @@ export default function createRex(_host: Host | null, web: Web) {
      * it.
      *
      * A session that cannot be asked is left alone: an empty session in Rex is better than a session that a call which
-     * failed cannot tell from one that another program is using. The connection steps out of a session that stays, so
-     * that a look at one does not leave the module among the viewers that Rex shows.
+     * failed cannot tell from one that another program is using. A session that stays is one that the caller steps the
+     * connection out of, so that a look at one does not leave the module among the viewers that Rex shows.
      */
     async function destroyIfEmpty(client: RexClient, sessionId: string): Promise<boolean> {
         try {
@@ -1087,9 +1087,12 @@ export default function createRex(_host: Host | null, web: Web) {
             }
         }
 
-        await client.call("session.detach", { session_id: sessionId }).catch(() => {});
-
         return false;
+    }
+
+    /** Steps the connection out of a session that stays, so that a look at one leaves no viewer behind in Rex. */
+    async function stepOut(client: RexClient, sessionId: string): Promise<void> {
+        await client.call("session.detach", { session_id: sessionId }).catch(() => {});
     }
 
     /**
@@ -1139,14 +1142,26 @@ export default function createRex(_host: Host | null, web: Web) {
         return [...sessions.values()];
     }
 
-    /** Closes the blocks that this module opened in a session, and destroys the session that they leave empty. */
+    /**
+     * Closes the blocks that this module opened in a session, and destroys the session that they leave empty.
+     *
+     * One session can hold the terminals of several conversations, so the session may stay while a terminal of
+     * another one is still in it. That terminal goes on calling over this connection, and a connection that stepped
+     * out of the session would have every one of those calls refused.
+     */
     async function letGoOf(session: Watched): Promise<void> {
         for (const blockId of session.blocks) {
             await session.client.call("block.close", { session_id: session.sessionId, block_id: blockId }).catch(() => {});
             forgetBlock(session.hostKey, blockId);
         }
 
-        if (await destroyIfEmpty(session.client, session.sessionId)) forget(session.hostKey, session.sessionId);
+        if (await destroyIfEmpty(session.client, session.sessionId)) {
+            forget(session.hostKey, session.sessionId);
+
+            return;
+        }
+
+        if (!held(session.hostKey, session.sessionId)) await stepOut(session.client, session.sessionId);
     }
 
     /**
@@ -1184,6 +1199,8 @@ export default function createRex(_host: Host | null, web: Web) {
                     if (await destroyIfEmpty(client, sessionId)) {
                         sessions.delete(sessionId);
                         changed = true;
+                    } else {
+                        await stepOut(client, sessionId);
                     }
                 }
             } catch {

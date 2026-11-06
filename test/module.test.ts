@@ -361,6 +361,42 @@ test("ends the terminal of a conversation that is archived, and only that conver
     expect(listing.terminals.map((each) => each.id)).toEqual([second.terminal.id]);
 });
 
+test("keeps the connection in the session that a terminal of another conversation still uses", async () => {
+    const server = serve();
+    const fake = module(server, {
+        sessions: [
+            { id: 7, cwd: root },
+            { id: 8, cwd: root, title: "Elsewhere" },
+        ],
+    });
+
+    await open(fake, server, { conversation: 7 });
+    const other = await open(fake, server, { conversation: 8 });
+
+    server.requests.length = 0;
+
+    fake.emit("session.archived", { conversationId: 7, archived: true });
+
+    await until(server, "block.close");
+    await Bun.sleep(300);
+
+    // The session stays, because the other conversation's shell is in it, and so does the connection that every call
+    // for that shell goes over.
+    expect(methods(server)).not.toContain("session.destroy");
+    expect(methods(server)).not.toContain("session.detach");
+
+    server.requests.length = 0;
+
+    await fake.call({
+        method: "POST",
+        path: "terminals/:id/input",
+        params: { id: other.terminal.id },
+        body: { text: "echo\r" },
+    });
+
+    expect(server.requests[0]).toMatchObject({ method: "com.superlogical.terminal.write" });
+});
+
 test("closes the shell of a session that is archived, and the session that it leaves empty", async () => {
     const server = serve();
     // The session is one that this module made, as a run that a crash ended would have written it down.
