@@ -90,6 +90,8 @@ interface Terminal {
     /** The name of the window that holds the block, which is what the bar under the terminal shows. */
     windowLabel: string;
     blockId: string;
+    /** Whether this module opened the block. One that it watches was Rex's before, and stays Rex's to close. */
+    owned: boolean;
     cols: number;
     rows: number;
     createdAt: number;
@@ -120,6 +122,8 @@ interface Shell {
     blockId: string;
     /** The window's label, which is the conversation's name. */
     windowLabel: string;
+    /** Whether this module opened the shell. A window that Rex already had keeps the shell that is in it. */
+    owned: boolean;
 }
 
 /** A Rex session that this module watched, and the blocks that it opened in it. */
@@ -590,13 +594,33 @@ export default function createRex(_host: Host | null, web: Web) {
             const shell = own === undefined ? undefined : blocksOf(own).find((each) => each.creator_name === TERMINAL_CREATOR)?.block_id;
 
             if (own !== undefined && typeof shell === "string" && shell !== "") {
-                return { windowId: own.window_id, blockId: shell, windowLabel: name };
+                return { windowId: own.window_id, blockId: shell, windowLabel: name, owned: true };
             }
         }
 
         const folder = request.sessions().find((each) => each.id === conversation);
 
         return await newShell(client, host.key, sessionId, name, folder?.cwd ?? homedir(), takenOf(windows));
+    }
+
+    /**
+     * The shell that a session already holds in a window, which a person picked on the rail: the module watches it
+     * rather than opening one, so the shell is Rex's, and so is the program in it.
+     */
+    async function shellAt(client: RexClient, sessionId: string, blockId: string): Promise<Shell> {
+        const windows = (await view(client, sessionId)).windows ?? [];
+
+        for (const window of windows) {
+            const block = blocksOf(window).find((each) => each.block_id === blockId);
+
+            if (block === undefined) continue;
+
+            if (block.creator_name !== TERMINAL_CREATOR) throw web.error(400, "That window holds no terminal.");
+
+            return { windowId: window.window_id, blockId, windowLabel: (window.label ?? "").trim(), owned: false };
+        }
+
+        throw web.error(404, "Rex has no such window.");
     }
 
     /**
@@ -629,7 +653,7 @@ export default function createRex(_host: Host | null, web: Web) {
 
         rememberBlock(hostKey, sessionId, blockId);
 
-        return { windowId: made.window_id, blockId, windowLabel: label };
+        return { windowId: made.window_id, blockId, windowLabel: label, owned: true };
     }
 
     /** The blocks of a window, which Rex keeps in the layers that the window splits into. */
@@ -930,8 +954,12 @@ export default function createRex(_host: Host | null, web: Web) {
         const client = await online(host);
         const blockId = shell.blockId;
 
-        // The owner's size is the terminal's size, and its colors are the terminal's colors.
-        await client.call("session.own_block", { session_id: sessionId, block_ids: [blockId], mode: "request" });
+        // The owner's size is the terminal's size, and its colors are the terminal's colors. A shell that Rex already
+        // had keeps the owner that it has, so that a page which looks at one does not take it from Rex.app.
+        if (shell.owned) {
+            await client.call("session.own_block", { session_id: sessionId, block_ids: [blockId], mode: "request" });
+        }
+
         await client.call(`${TERMINAL_CREATOR}.resize`, {
             session_id: sessionId,
             block_id: blockId,
@@ -947,6 +975,7 @@ export default function createRex(_host: Host | null, web: Web) {
             windowId: shell.windowId,
             windowLabel: shell.windowLabel,
             blockId,
+            owned: shell.owned,
             cols,
             rows,
             createdAt: Date.now(),
@@ -1041,11 +1070,17 @@ export default function createRex(_host: Host | null, web: Web) {
 
     /**
      * Ends a terminal, and says that it ended, because a person asked for it: the page closes the panel and says
-     * nothing about it. The block goes back to Rex rather than closing, since a session that a person picked on the
-     * rail is theirs, and its shell keeps running for Rex.app to show.
+     * nothing about it. The block goes back to Rex rather than closing, since its shell keeps running for Rex.app to
+     * show.
+     *
+     * A block that this module did not open is another program's: it is given back to nobody, because it was never
+     * this module's.
      */
     function end(terminal: Terminal): void {
         unwatch(terminal);
+
+        if (!terminal.owned) return;
+
         forgetBlock(terminal.hostKey, terminal.blockId);
 
         void terminal.client
@@ -1146,6 +1181,9 @@ export default function createRex(_host: Host | null, web: Web) {
         const sessions = new Map<string, Watched>();
 
         for (const terminal of watched) {
+            // A block that this module only watched is Rex's, and closing it would end a program that a person put there.
+            if (!terminal.owned) continue;
+
             const key = `${terminal.hostKey}\u0000${terminal.sessionId}`;
             const found = sessions.get(key);
 
@@ -1424,14 +1462,22 @@ export default function createRex(_host: Host | null, web: Web) {
         const named = String(request.body.host ?? "");
         // The bar's New shell: another shell where this one is, rather than the one that is already there.
         const fresh = request.body.new === true;
+        // A shell that a person picked on the rail: its session, and the block of the window that they tapped. The
+        // shell in it is one that Rex already had.
+        const pickedSession = String(request.body.session ?? "").trim();
+        const pickedBlock = String(request.body.block ?? "").trim();
+        const picked = pickedSession !== "" && pickedBlock !== "";
         const host = named === "" ? await ownHost() : await hostOf(named);
-        const sessionId = await pocketSession(host);
+        const client = await online(host);
+        const sessionId = picked ? pickedSession : await pocketSession(host);
 
         // A session that this page is not a viewer of will not own a block for it, and a window is no use to a page
         // that cannot see it.
-        await (await online(host)).call("session.attach", { session_id: sessionId });
+        await client.call("session.attach", { session_id: sessionId });
 
-        const shell = await shellFor(request, host, sessionId, conversation, fresh);
+        const shell = picked
+            ? await shellAt(client, sessionId, pickedBlock)
+            : await shellFor(request, host, sessionId, conversation, fresh);
 
         // One terminal for each shell: a page that reloads finds the one that it left rather than a second stream.
         const existing = [...terminals.values()].find((each) => each.alive && each.hostKey === host.key && each.blockId === shell.blockId);

@@ -5,7 +5,7 @@
  * The runner is the real one, with `libghostty-vt` in this repository, so a frame here is the frame a page draws.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import createRex, { rexKeyName, rexKeyOf } from "../extensions/rex.ts";
@@ -21,6 +21,15 @@ function here(): FakeWindow {
         window_id: "window:1",
         label: "Here",
         blocks: [{ block_id: "block:1", creator_name: "com.superlogical.terminal", label: "Here" }],
+    };
+}
+
+/** A shell that a person started in Rex, in a window of a session of their own: one that this module only watches. */
+function theirs(): FakeWindow {
+    return {
+        window_id: "window:2",
+        label: "Their own",
+        blocks: [{ block_id: "block:2", creator_name: "com.superlogical.terminal", label: "Their own" }],
     };
 }
 
@@ -359,6 +368,70 @@ test("ends the terminal of a conversation that is archived, and only that conver
 
     // The archived one is gone, and the one on the conversation that is still open is there.
     expect(listing.terminals.map((each) => each.id)).toEqual([second.terminal.id]);
+});
+
+test("shows the shell of a window that Rex already holds, without taking it from Rex", async () => {
+    const server = serve({ windows: { "session:1": [here(), theirs()] } });
+    const fake = module(server);
+
+    const { terminal } = await open(fake, server, { session: "session:1", block: "block:2" });
+
+    expect(terminal).toMatchObject({ session: "session:1", block: "block:2" });
+    expect(terminal).toMatchObject({ windowLabel: "Their own" });
+
+    // The shell is the one that was there: no second one, and no owner taken from the app that shows it.
+    expect(methods(server)).not.toContain("session.new_window");
+    expect(methods(server)).not.toContain("session.own_block");
+
+    // A terminal watches it: a key reaches the block that it was already writing to, and it is the same one after.
+    server.requests.length = 0;
+
+    await fake.call({
+        method: "POST",
+        path: "terminals/:id/input",
+        params: { id: terminal.id },
+        body: { text: "echo\r" },
+    });
+
+    expect(server.requests[0]).toMatchObject({
+        method: "com.superlogical.terminal.write",
+        payload: { session_id: "session:1", block_id: "block:2" },
+    });
+});
+
+test("does not take back a window that Rex held, when a person ends its terminal", async () => {
+    const server = serve({ windows: { "session:1": [here(), theirs()] } });
+    const fake = module(server);
+
+    const { terminal } = await open(fake, server, { session: "session:1", block: "block:2" });
+
+    server.requests.length = 0;
+
+    await fake.call({ method: "DELETE", path: "terminals/:id", params: { id: terminal.id } });
+
+    // The block was never this module's, so there is nothing to give back, and nothing to remember either.
+    expect(methods(server)).not.toContain("session.disown_block");
+
+    const remembered = existsSync(join(fake.state, "rex", "made.json")) ? ledgerOf(fake.state)[server.url] ?? {} : {};
+
+    expect(JSON.stringify(remembered)).not.toContain("block:2");
+});
+
+test("leaves the shell of a window that Rex holds running when the conversation is archived", async () => {
+    const server = serve({ windows: { "session:1": [here(), theirs()] } });
+    const fake = module(server);
+
+    await open(fake, server, { session: "session:1", block: "block:2" });
+
+    server.requests.length = 0;
+
+    fake.emit("session.archived", { conversationId: 7, archived: true });
+
+    await Bun.sleep(300);
+
+    // The window is another program's: an archived conversation stops watching it, and closes nothing.
+    expect(methods(server)).not.toContain("block.close");
+    expect(methods(server)).not.toContain("session.close_window");
 });
 
 test("keeps the connection in the session that a terminal of another conversation still uses", async () => {
