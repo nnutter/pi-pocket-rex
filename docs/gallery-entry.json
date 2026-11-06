@@ -18,39 +18,39 @@
     "version": "0.1.0",
     "source": {
         "repo": "nnutter/pi-pocket-rex",
-        "commit": "d695c34d3f5d3e1b201246bda7e4d52f058710d3",
+        "commit": "3ca4665e500b4219f4b35ea1c42dec0e402cfc62",
         "path": "extensions"
     },
     "files": [
         {
             "name": "rex.ts",
-            "sha256": "c684251c7563671e03db40cbb0e2ae29da48fe59e44a2c6eaf5b39c0c37929ac",
-            "size": 56520
+            "sha256": "2681306da99369d4b76fb634806dea789cb6ba4c387bfe12c945fae0c62522ce",
+            "size": 70808
         },
         {
             "name": "_rex-client.ts",
-            "sha256": "acee740cf1c79dc6e76feb330dd5c49d6c1d6e3014aee42111ccbc13fe6dbd9e",
-            "size": 28373
+            "sha256": "cb5948f144650aec5e72c77296faa38c8c4e8aa568dc1ac2be67cb6d9207d319",
+            "size": 29119
         },
         {
             "name": "rex/index.js",
-            "sha256": "7b66d297d86933becfcce9a0bf8c8673ae9f7e7f865b6f950a13c3c1f9dd15ad",
-            "size": 26786
+            "sha256": "59383c39c1ad94a93019be42c513ebd8ddbeec3da7d0b25f8e9738094f33089a",
+            "size": 26983
         },
         {
             "name": "rex/terminal.js",
-            "sha256": "2e1172a07c2f5d1a9ebdbd00d24d20272aef0a6f195230e5ce222a9b8f7a2813",
-            "size": 51911
+            "sha256": "fe2fbb308aa0c5cd1cdf6673ad129bdb7e12d1da7acb2922160fde1dea76ef1b",
+            "size": 51937
         },
         {
             "name": "rex/picker.js",
-            "sha256": "5ed4391331bc5880f54aacf6e21e0222b258ed08dcc5e3c36c3b82d445d6e6ae",
-            "size": 15515
+            "sha256": "db3c645c9a552f0d64f3146ddec1939957f730ddb2891a6a8a9e5e4612c3c489",
+            "size": 18150
         },
         {
             "name": "rex/terminal.css",
-            "sha256": "15e428415e6621e8e15636a5476fec3f1c480b98d41816480796449e0d9f8fb3",
-            "size": 19164
+            "sha256": "b0c33cad72b5440f0bb15968bb3ae7d7c5e9f1e347a82e45f1946d59f479615c",
+            "size": 20349
         }
     ],
     "pocketApi": 2,

@@ -14,7 +14,15 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { delimiter, dirname, join } from "node:path";
-import { RexCallError, RexClient, RexStream, RexMessageFilter } from "./_rex-client.ts";
+import {
+    RexCallError,
+    RexClient,
+    RexStream,
+    RexMessageFilter,
+    type RexBlock,
+    type RexView,
+    type RexWindow,
+} from "./_rex-client.ts";
 import type { Host, Web, WebRequest, WebSession } from "./_pocket.d.ts";
 
 /**
@@ -42,6 +50,14 @@ interface Frame {
 /** The block creator that every shell in Rex belongs to. */
 const TERMINAL_CREATOR = "com.superlogical.terminal";
 
+/**
+ * The name of the one Rex session that this module opens its shells in, on each machine.
+ *
+ * A session's name is how the module finds it again after a restart, and a person sees the same name in Rex: one Pi
+ * Pocket session, with a window for each conversation.
+ */
+const POCKET_SESSION = "Pi Pocket";
+
 /** The most terminals at once. Beyond it, a new one is refused. */
 const MAX_TERMINALS = 8;
 
@@ -68,11 +84,14 @@ interface Terminal {
     /** The Rex server, by the key that its host row uses. */
     hostKey: string;
     hostLabel: string;
-    /** The Rex session and the block inside it. */
+    /** The Rex session, the window in it, and the block in that window. */
     sessionId: string;
-    /** The session's own name, which is what a person calls it in Rex. */
-    sessionLabel: string;
+    windowId: string;
+    /** The name of the window that holds the block, which is what the bar under the terminal shows. */
+    windowLabel: string;
     blockId: string;
+    /** Whether this module opened the block. One that it watches was Rex's before, and stays Rex's to close. */
+    owned: boolean;
     cols: number;
     rows: number;
     createdAt: number;
@@ -97,6 +116,30 @@ interface Terminal {
     markReady: () => void;
 }
 
+/** The shell in a window, which is what a terminal watches. */
+interface Shell {
+    windowId: string;
+    blockId: string;
+    /** The window's label, which is the conversation's name. */
+    windowLabel: string;
+    /** Whether this module opened the shell. A window that Rex already had keeps the shell that is in it. */
+    owned: boolean;
+}
+
+/** A Rex session that this module watched, and the blocks that it opened in it. */
+interface Watched {
+    client: RexClient;
+    hostKey: string;
+    sessionId: string;
+    blocks: string[];
+}
+
+/**
+ * The sessions that this module made, by the machine that holds each one, and the blocks that it opened in each of
+ * them.
+ */
+type Ledger = Map<string, Map<string, Set<string>>>;
+
 export default function createRex(_host: Host | null, web: Web) {
     const terminals = new Map<string, Terminal>();
 
@@ -118,27 +161,44 @@ export default function createRex(_host: Host | null, web: Web) {
     /** Pi Pocket's data folder, which a person can move with `PI_POCKET_DIR`: where a module keeps what it remembers. */
     const dataFolder = (process.env.PI_POCKET_DIR ?? "").trim() || join(homedir(), ".pi-pocket");
 
-    /** The file of the sessions that this module made. */
+    /** The file of the sessions and blocks that this module made. */
     const ledgerFile = join(dataFolder, "rex", MADE_FILE);
 
     /**
-     * The sessions that this module made, by the endpoint of the machine that holds each one.
+     * The sessions that this module made, by the endpoint of the machine that holds each one, and the blocks that it
+     * opened in each of them.
      *
      * Rex keeps a session that has lost its last block, and a tab that dies says no goodbye, so nothing on the Rex side
      * would ever close the session that such a tab leaves. A file is what makes the next look work after the restart
-     * that lost the goodbye, and Pi Pocket's data folder is where a module's own state belongs.
+     * that lost the goodbye, and Pi Pocket's data folder is where a module's own state belongs. The blocks are in it
+     * for the same reason: a terminal that this module opened is only its own while it holds it.
      */
     const ledger = readLedger();
 
     /** The ledger as it is on disk: empty when it is not there, or when a half-written save left what is not a ledger. */
-    function readLedger(): Map<string, Set<string>> {
-        const kept = new Map<string, Set<string>>();
+    function readLedger(): Ledger {
+        const kept: Ledger = new Map();
 
         try {
             const held = JSON.parse(readFileSync(ledgerFile, "utf8")) as Record<string, unknown>;
 
-            for (const [host, ids] of Object.entries(held)) {
-                if (Array.isArray(ids)) kept.set(host, new Set(ids.filter((each) => typeof each === "string")));
+            for (const [host, made] of Object.entries(held)) {
+                const sessions = new Map<string, Set<string>>();
+
+                // The ledger of the version that kept sessions alone, whose blocks it never wrote down.
+                if (Array.isArray(made)) {
+                    for (const each of made) if (typeof each === "string") sessions.set(each, new Set());
+                }
+
+                if (made !== null && typeof made === "object" && !Array.isArray(made)) {
+                    for (const [sessionId, blocks] of Object.entries(made as Record<string, unknown>)) {
+                        if (!Array.isArray(blocks)) continue;
+
+                        sessions.set(sessionId, new Set(blocks.filter((each) => typeof each === "string")));
+                    }
+                }
+
+                if (sessions.size > 0) kept.set(host, sessions);
             }
         } catch {
             // A module that remembers nothing is a module that ends nothing that it did not make, which is the safe way
@@ -150,9 +210,17 @@ export default function createRex(_host: Host | null, web: Web) {
 
     /** Writes the ledger down, so that the next run of this module can find what this one made. */
     function saveLedger(): void {
-        const held: Record<string, string[]> = {};
+        const held: Record<string, Record<string, string[]>> = {};
 
-        for (const [host, ids] of ledger) if (ids.size > 0) held[host] = [...ids];
+        for (const [host, sessions] of ledger) {
+            if (sessions.size === 0) continue;
+
+            const made: Record<string, string[]> = {};
+
+            for (const [sessionId, blocks] of sessions) made[sessionId] = [...blocks];
+
+            held[host] = made;
+        }
 
         try {
             mkdirSync(dirname(ledgerFile), { recursive: true });
@@ -165,23 +233,50 @@ export default function createRex(_host: Host | null, web: Web) {
 
     /** Says that this module made a session, so that a look after a restart can find it. */
     function remember(hostKey: string, sessionId: string): void {
-        const ids = ledger.get(hostKey) ?? new Set<string>();
+        const sessions = ledger.get(hostKey) ?? new Map<string, Set<string>>();
 
-        ledger.set(hostKey, ids);
+        ledger.set(hostKey, sessions);
 
-        if (ids.has(sessionId)) return;
+        if (sessions.has(sessionId)) return;
 
-        ids.add(sessionId);
+        sessions.set(sessionId, new Set());
         saveLedger();
     }
 
     /** Says that a session that this module made is gone. */
     function forget(hostKey: string, sessionId: string): void {
-        const ids = ledger.get(hostKey);
+        const sessions = ledger.get(hostKey);
 
-        if (ids === undefined || !ids.delete(sessionId)) return;
+        if (sessions === undefined || !sessions.delete(sessionId)) return;
 
         saveLedger();
+    }
+
+    /** Says that this module opened a block, so that a look after a restart can find it again. */
+    function rememberBlock(hostKey: string, sessionId: string, blockId: string): void {
+        remember(hostKey, sessionId);
+
+        const blocks = ledger.get(hostKey)?.get(sessionId);
+
+        if (blocks === undefined || blocks.has(blockId)) return;
+
+        blocks.add(blockId);
+        saveLedger();
+    }
+
+    /** Says that a block is no longer this module's: it closed the block, or gave it back. */
+    function forgetBlock(hostKey: string, blockId: string): void {
+        const sessions = ledger.get(hostKey);
+
+        if (sessions === undefined) return;
+
+        for (const blocks of sessions.values()) {
+            if (!blocks.delete(blockId)) continue;
+
+            saveLedger();
+
+            return;
+        }
     }
 
     /** The socket that a Rex server on this machine listens on, which is what `rex server status` prints. */
@@ -334,6 +429,17 @@ export default function createRex(_host: Host | null, web: Web) {
         return client;
     }
 
+    /**
+     * A session's windows and the blocks in each of them.
+     *
+     * The connection is asked directly rather than through a method of its own, because Pi Pocket loads a drop-in
+     * once and gives only that file a new address when it changes: an import beside it keeps whatever the first load
+     * returned, so a method that this module's client gained after the server started would not be there to call.
+     */
+    async function view(client: RexClient, sessionId: string): Promise<RexView> {
+        return await client.call<RexView>("session.view", { session_id: sessionId });
+    }
+
     /** The host's connection, opened if it is not open. Two calls that arrive together share one connection. */
     async function online(host: RexHost): Promise<RexClient> {
         const client = rexFor(host);
@@ -439,55 +545,167 @@ export default function createRex(_host: Host | null, web: Web) {
     }
 
     /**
-     * The session that belongs to one conversation: the one that is named after it, or a new one in the conversation's
-     * folder.
+     * The one session that holds this module's terminals on a machine: the one that the person sees as Pi Pocket, made
+     * the first time that a terminal is asked for.
      *
-     * A session is found by its label rather than remembered, so that a person who restarts Pi Pocket, or opens the
-     * terminal from another tab, comes back to the terminal that they left instead of a second one. The label is the
-     * conversation's title, which is the name that the session has in Rex too.
+     * A session is found by its label rather than remembered in memory, so that a person who restarts Pi Pocket, or
+     * opens a terminal from another tab, comes back to the session that they left instead of a second one.
      */
-    async function ownSession(
-        host: RexHost,
-        conversation: number,
-        sessions: readonly WebSession[],
-        cols: number,
-        rows: number,
-        fresh = false,
-    ): Promise<string> {
+    async function pocketSession(host: RexHost): Promise<string> {
         const client = await online(host);
-        // A shell that a person asks for by name -- the bar's New shell -- is a session of its own, whatever the
-        // conversation is called.
-        const label = fresh ? "" : (sessions.find((each) => each.id === conversation)?.title ?? "").trim();
+        const found = (await client.sessions()).find((each) => (each.label ?? "").trim() === POCKET_SESSION);
 
-        if (label !== "") {
-            const found = (await client.sessions()).find((each) => (each.label ?? "").trim() === label);
+        if (found !== undefined) return found.session_id;
 
-            if (found !== undefined) return found.session_id;
-        }
-
-        const cwd = sessions.find((each) => each.id === conversation)?.cwd ?? homedir();
-        const made = await client.call<{ session_id?: string }>("session.create", {
-            ...(label === "" ? {} : { label }),
-            initial_windows: [
-                {
-                    layout: {
-                        block: {
-                            flavor: `${TERMINAL_CREATOR}.shell`,
-                            options: { cwd },
-                            size: { columns: cols, rows },
-                        },
-                    },
-                },
-            ],
-        });
+        const made = await client.call<{ session_id?: string }>("session.create", { label: POCKET_SESSION });
 
         if (typeof made.session_id !== "string" || made.session_id === "") {
-            throw web.error(502, "Rex made no session for this conversation.");
+            throw web.error(502, "Rex made no session for this machine.");
         }
 
         remember(host.key, made.session_id);
 
         return made.session_id;
+    }
+
+    /**
+     * A shell for one conversation, in the Pi Pocket session: the shell of the conversation's own window, or a new
+     * window for it.
+     *
+     * A window is found by its label rather than remembered, so that a person who reloads the page, or opens the
+     * terminal from another tab, comes back to the shell that they left. The label is the conversation's title, which
+     * is what the person calls the conversation in Pi Pocket, and what the bar under the terminal shows.
+     */
+    async function shellFor(
+        request: WebRequest,
+        host: RexHost,
+        sessionId: string,
+        conversation: number,
+        fresh: boolean,
+    ): Promise<Shell> {
+        const client = await online(host);
+        const windows = (await view(client, sessionId)).windows ?? [];
+        const name = windowName(request.sessions(), conversation);
+
+        // The bar's New shell asks for another shell in the same folder, so it never comes back to the one that is
+        // already there.
+        if (!fresh) {
+            const own = windows.find((each) => (each.label ?? "").trim() === name);
+            const shell = own === undefined ? undefined : shellIn(own)?.block_id;
+
+            if (own !== undefined && typeof shell === "string" && shell !== "") {
+                return { windowId: own.window_id, blockId: shell, windowLabel: name, owned: true };
+            }
+        }
+
+        const folder = request.sessions().find((each) => each.id === conversation);
+
+        return await newShell(client, host.key, sessionId, name, folder?.cwd ?? homedir(), takenOf(windows));
+    }
+
+    /**
+     * The shell that a session already holds in a window, which a person picked on the rail: the module watches it
+     * rather than opening one, so the shell is Rex's, and so is the program in it.
+     */
+    async function shellAt(client: RexClient, hostKey: string, sessionId: string, blockId: string): Promise<Shell> {
+        const windows = (await view(client, sessionId)).windows ?? [];
+
+        for (const window of windows) {
+            const block = blocksOf(window).find((each) => each.block_id === blockId);
+
+            if (block === undefined) continue;
+
+            if (block.creator_name !== TERMINAL_CREATOR) throw web.error(400, "That window holds no terminal.");
+
+            // A shell that this module made is still its own, so that ending the terminal gives it back as it always has.
+            return {
+                windowId: window.window_id,
+                blockId,
+                windowLabel: (window.label ?? "").trim(),
+                owned: mine(hostKey, sessionId, blockId),
+            };
+        }
+
+        throw web.error(404, "Rex has no such window.");
+    }
+
+    /**
+     * A new window in the Pi Pocket session, with one shell in it, named after the conversation that asked for it.
+     *
+     * The window carries the conversation's name, so that a person looking at Rex sees which conversation each window
+     * is for, and so that the module finds that window again by the same name. The block carries the same name: Rex
+     * shows both, and a person reads them as one thing.
+     */
+    async function newShell(
+        client: RexClient,
+        hostKey: string,
+        sessionId: string,
+        name: string,
+        cwd: string,
+        taken: ReadonlySet<string>,
+    ): Promise<Shell> {
+        const label = freeName(taken, name);
+        const made = await client.call<{ window_id?: string | null; block_ids?: string[] | null }>("session.new_window", {
+            session_id: sessionId,
+            window_label: label,
+            layout: { block: { flavor: `${TERMINAL_CREATOR}.shell`, label, options: { cwd } } },
+        });
+
+        const blockId = made.block_ids?.[0] ?? "";
+
+        if (typeof made.window_id !== "string" || made.window_id === "" || blockId === "") {
+            throw web.error(502, "Rex made no terminal for that conversation.");
+        }
+
+        rememberBlock(hostKey, sessionId, blockId);
+
+        return { windowId: made.window_id, blockId, windowLabel: label, owned: true };
+    }
+
+    /** The blocks of a window, which Rex keeps in the layers that the window splits into. */
+    function blocksOf(window: RexWindow): RexBlock[] {
+        return (window.layers ?? []).flatMap((layer) => layer.blocks ?? []);
+    }
+
+    /**
+     * The terminal of a window: the one that has the focus, when that one is a terminal, and otherwise the first one.
+     * A window can hold an editor beside a shell, and the shell is what a page can draw.
+     */
+    function shellIn(window: RexWindow): RexBlock | undefined {
+        const shells = blocksOf(window).filter((each) => each.creator_name === TERMINAL_CREATOR);
+
+        return shells.find((each) => each.block_id === window.focused_block_id) ?? shells[0];
+    }
+
+    /** Whether this module made a block: the ledger still says that it holds it, and has not given it back. */
+    function mine(hostKey: string, sessionId: string, blockId: string): boolean {
+        return ledger.get(hostKey)?.get(sessionId)?.has(blockId) === true;
+    }
+
+    /** The names that the windows of a session already carry, which a new window's name must not repeat. */
+    function takenOf(windows: readonly RexWindow[]): Set<string> {
+        return new Set(windows.map((each) => (each.label ?? "").trim()));
+    }
+
+    /** The name of a conversation's window in Rex: the conversation's title, which is what a person calls it there. */
+    function windowName(sessions: readonly WebSession[], conversation: number): string {
+        return (sessions.find((each) => each.id === conversation)?.title ?? "").trim() || POCKET_SESSION;
+    }
+
+    /**
+     * A name that no window of the session carries yet: the name itself, or the number after it that is free.
+     *
+     * A person can ask for a second shell in one conversation, and two windows of one name would make the window that
+     * a reload comes back to a guess.
+     */
+    function freeName(taken: ReadonlySet<string>, name: string): string {
+        if (!taken.has(name)) return name;
+
+        for (let count = 2; ; count += 1) {
+            const candidate = `${name} ${count}`;
+
+            if (!taken.has(candidate)) return candidate;
+        }
     }
 
     /** One host, and the sessions that it holds, or why it could not be asked. */
@@ -497,17 +715,53 @@ export default function createRex(_host: Host | null, web: Web) {
         try {
             const client = await online(host);
             const sessions = await client.sessions();
+            const windows = await Promise.all(sessions.map((session) => windowsOf(client, host.key, session.session_id)));
 
             return {
                 ...base,
                 online: true,
                 address: client.address,
-                sessions: sessions.map((session) => ({ id: session.session_id, label: session.label ?? session.session_id })),
+                sessions: sessions.map((session, at) => ({
+                    id: session.session_id,
+                    label: session.label ?? session.session_id,
+                    windows: windows[at],
+                })),
             };
         } catch (error) {
             offline(host);
 
             return { ...base, online: false, address: "", error: error instanceof Error ? error.message : String(error), sessions: [] };
+        }
+    }
+
+    /**
+     * The windows of a session, each with the shell that a page can show there: what the picker lists under the session.
+     *
+     * Rex shows a session's windows to a connection that is attached to it, so a look attaches, reads, and steps out
+     * again, unless a terminal of this module is in that session and needs the connection where it is. A session that
+     * Rex will not show is a session with no window: the list is worth more than the one row that failed.
+     */
+    async function windowsOf(
+        client: RexClient,
+        hostKey: string,
+        sessionId: string,
+    ): Promise<Array<{ id: string; label: string; block: string }>> {
+        try {
+            await client.call("session.attach", { session_id: sessionId });
+
+            const windows = (await view(client, sessionId)).windows ?? [];
+
+            const listed = windows.map((window) => ({
+                id: window.window_id,
+                label: (window.label ?? "").trim(),
+                block: shellIn(window)?.block_id ?? "",
+            }));
+
+            if (!held(hostKey, sessionId)) await stepOut(client, sessionId);
+
+            return listed;
+        } catch {
+            return [];
         }
     }
 
@@ -549,7 +803,7 @@ export default function createRex(_host: Host | null, web: Web) {
             host: terminal.hostKey,
             hostLabel: terminal.hostLabel,
             session: terminal.sessionId,
-            sessionLabel: terminal.sessionLabel,
+            windowLabel: terminal.windowLabel,
             block: terminal.blockId,
             cols: terminal.cols,
             rows: terminal.rows,
@@ -742,47 +996,27 @@ export default function createRex(_host: Host | null, web: Web) {
     }
 
     /**
-     * Opens a terminal: attach to the Rex session, take its terminal block, own it so that the size is this page's, and
-     * start the stream and the screen together.
+     * Opens a terminal: own the shell in its window, so that the size is this page's, and start the stream and the
+     * screen together.
      */
     async function start(
         request: WebRequest,
         host: RexHost,
         sessionId: string,
+        shell: Shell,
         conversation: number,
         cols: number,
         rows: number,
     ): Promise<Terminal> {
         const client = await online(host);
+        const blockId = shell.blockId;
 
-        await client.call("session.attach", { session_id: sessionId });
-
-        const listing = await client.call<{ blocks?: Array<{ block_id: string; creator_name?: string }> | null }>(
-            "session.list_blocks",
-            { session_id: sessionId },
-        );
-
-        let blockId = (listing.blocks ?? []).find((each) => each.creator_name === TERMINAL_CREATOR)?.block_id ?? "";
-
-        if (blockId === "") {
-            // A session with no terminal is a session that has nothing to show, so it gets one in the folder of the
-            // conversation that asked for it.
-            const session = request.sessions().find((each) => each.id === conversation);
-            const made = await client.call<{ block_ids?: string[] | null }>("session.new_window", {
-                session_id: sessionId,
-                layout: { block: { flavor: `${TERMINAL_CREATOR}.shell`, options: { cwd: session?.cwd ?? homedir() } } },
-            });
-
-            blockId = made.block_ids?.[0] ?? "";
+        // The owner's size is the terminal's size, and its colors are the terminal's colors. A shell that Rex already
+        // had keeps the owner that it has, so that a page which looks at one does not take it from Rex.app.
+        if (shell.owned) {
+            await client.call("session.own_block", { session_id: sessionId, block_ids: [blockId], mode: "request" });
         }
 
-        if (blockId === "") throw web.error(502, "Rex made no terminal for that session.");
-
-        // The session's own name, for the bar: a person looking at a terminal should see which one it is.
-        const named = (await client.sessions()).find((each) => each.session_id === sessionId);
-
-        // The owner's size is the terminal's size, and its colors are the terminal's colors.
-        await client.call("session.own_block", { session_id: sessionId, block_ids: [blockId], mode: "request" });
         await client.call(`${TERMINAL_CREATOR}.resize`, {
             session_id: sessionId,
             block_id: blockId,
@@ -795,8 +1029,10 @@ export default function createRex(_host: Host | null, web: Web) {
             hostKey: host.key,
             hostLabel: host.label,
             sessionId,
-            sessionLabel: named?.label ?? sessionId,
+            windowId: shell.windowId,
+            windowLabel: shell.windowLabel,
             blockId,
+            owned: shell.owned,
             cols,
             rows,
             createdAt: Date.now(),
@@ -876,21 +1112,33 @@ export default function createRex(_host: Host | null, web: Web) {
     /**
      * Ends the terminals of a session that is archived: an archived session has nowhere to show a terminal, so a shell
      * that nobody can see does not keep running.
+     *
+     * The shell is Rex's, so ending it here closes its block rather than giving the block back, and the session that the
+     * closed blocks leave empty goes with them: an archived conversation is not a place to come back to.
      */
-    function close(conversation: number): void {
-        for (const terminal of [...terminals.values()]) {
-            if (terminal.conversation !== conversation) continue;
+    async function close(conversation: number): Promise<void> {
+        const watched = [...terminals.values()].filter((terminal) => terminal.conversation === conversation);
+        const sessions = sessionsOf(watched);
 
-            end(terminal);
-        }
+        for (const terminal of watched) unwatch(terminal);
+
+        for (const session of sessions) await letGoOf(session);
     }
 
     /**
-     * Ends a terminal, and says that it ended. A person asked for this, or their session went, so the page closes the
-     * panel and says nothing about it. The Rex session keeps running: this module was only watching it.
+     * Ends a terminal, and says that it ended, because a person asked for it: the page closes the panel and says
+     * nothing about it. The block goes back to Rex rather than closing, since its shell keeps running for Rex.app to
+     * show.
+     *
+     * A block that this module did not open is another program's: it is given back to nobody, because it was never
+     * this module's.
      */
     function end(terminal: Terminal): void {
         unwatch(terminal);
+
+        if (!terminal.owned) return;
+
+        forgetBlock(terminal.hostKey, terminal.blockId);
 
         void terminal.client
             .call("session.disown_block", { session_id: terminal.sessionId, block_ids: [terminal.blockId] })
@@ -928,8 +1176,8 @@ export default function createRex(_host: Host | null, web: Web) {
      * it.
      *
      * A session that cannot be asked is left alone: an empty session in Rex is better than a session that a call which
-     * failed cannot tell from one that another program is using. The connection steps out of a session that stays, so
-     * that a look at one does not leave the module among the viewers that Rex shows.
+     * failed cannot tell from one that another program is using. A session that stays is one that the caller steps the
+     * connection out of, so that a look at one does not leave the module among the viewers that Rex shows.
      */
     async function destroyIfEmpty(client: RexClient, sessionId: string): Promise<boolean> {
         try {
@@ -953,9 +1201,12 @@ export default function createRex(_host: Host | null, web: Web) {
             }
         }
 
-        await client.call("session.detach", { session_id: sessionId }).catch(() => {});
-
         return false;
+    }
+
+    /** Steps the connection out of a session that stays, so that a look at one leaves no viewer behind in Rex. */
+    async function stepOut(client: RexClient, sessionId: string): Promise<void> {
+        await client.call("session.detach", { session_id: sessionId }).catch(() => {});
     }
 
     /**
@@ -967,53 +1218,106 @@ export default function createRex(_host: Host | null, web: Web) {
      * end, since that block is a program that a person started in Rex.
      */
     async function letGo(): Promise<void> {
-        // One look at each session, taken before the watch ends: two terminals can share a session, and it is empty
-        // only once both of them have gone.
-        const sessions = new Map<string, Terminal>();
+        // The sessions are taken before the watch ends: two terminals can share a session, and it is empty only once
+        // both of them have gone.
+        const sessions = sessionsOf([...terminals.values()]);
 
-        for (const terminal of [...terminals.values()]) {
-            const key = `${terminal.hostKey}\u0000${terminal.sessionId}`;
+        for (const terminal of [...terminals.values()]) unwatch(terminal);
 
-            if (!sessions.has(key)) sessions.set(key, terminal);
-
-            const client = terminal.client;
-            const { sessionId, blockId } = terminal;
-
-            unwatch(terminal);
-
-            await client.call("block.close", { session_id: sessionId, block_id: blockId }).catch(() => {});
-        }
-
-        for (const terminal of sessions.values()) {
-            if (await destroyIfEmpty(terminal.client, terminal.sessionId)) forget(terminal.hostKey, terminal.sessionId);
-        }
+        for (const session of sessions) await letGoOf(session);
     }
 
     /**
-     * Ends what a tab that died left in Rex: the sessions that this module made and that hold no block any more.
+     * The sessions that terminals are in, each with the blocks that this module opened in it, by a machine and a
+     * session.
+     *
+     * A caller closes every block of a session before it asks whether the session is empty: two terminals can share
+     * one, and a look that came between their blocks would find a session that is not empty yet.
+     */
+    function sessionsOf(watched: readonly Terminal[]): Watched[] {
+        const sessions = new Map<string, Watched>();
+
+        for (const terminal of watched) {
+            // A block that this module only watched is Rex's, and closing it would end a program that a person put there.
+            if (!terminal.owned) continue;
+
+            const key = `${terminal.hostKey}\u0000${terminal.sessionId}`;
+            const found = sessions.get(key);
+
+            if (found === undefined) {
+                sessions.set(key, {
+                    client: terminal.client,
+                    hostKey: terminal.hostKey,
+                    sessionId: terminal.sessionId,
+                    blocks: [terminal.blockId],
+                });
+            } else {
+                found.blocks.push(terminal.blockId);
+            }
+        }
+
+        return [...sessions.values()];
+    }
+
+    /**
+     * Closes the blocks that this module opened in a session, and destroys the session that they leave empty.
+     *
+     * One session can hold the terminals of several conversations, so the session may stay while a terminal of
+     * another one is still in it. That terminal goes on calling over this connection, and a connection that stepped
+     * out of the session would have every one of those calls refused.
+     */
+    async function letGoOf(session: Watched): Promise<void> {
+        for (const blockId of session.blocks) {
+            await session.client.call("block.close", { session_id: session.sessionId, block_id: blockId }).catch(() => {});
+            forgetBlock(session.hostKey, blockId);
+        }
+
+        if (await destroyIfEmpty(session.client, session.sessionId)) {
+            forget(session.hostKey, session.sessionId);
+
+            return;
+        }
+
+        if (!held(session.hostKey, session.sessionId)) await stepOut(session.client, session.sessionId);
+    }
+
+    /**
+     * Ends what a tab that died left in Rex: the blocks that this module opened and that no terminal holds any more,
+     * and then the sessions that those blocks leave empty.
      *
      * A tab that goes says goodbye, and letGo ends what it was watching. A tab that dies says nothing, so the module
-     * finds its own sessions again the next time that one says hello, and closes the ones that are empty by then. What
-     * it leaves alone is a session that still holds a block, and a session that this module holds a terminal of: a
-     * session is empty only once the block that the module opened has closed.
+     * finds its own blocks again the next time that one says hello, and closes the ones that no terminal holds. What it
+     * leaves alone is a block that another program opened, and a session that still holds a block: a session is empty
+     * only once every block in it has closed.
      */
     async function sweep(): Promise<void> {
         let changed = false;
 
         for (const host of await hostList()) {
-            const ids = ledger.get(host.key);
+            const sessions = ledger.get(host.key);
 
-            if (ids === undefined || ids.size === 0) continue;
+            if (sessions === undefined || sessions.size === 0) continue;
 
             try {
                 const client = await online(host);
 
-                for (const id of [...ids]) {
-                    if (held(host.key, id)) continue;
+                for (const [sessionId, blocks] of [...sessions]) {
+                    for (const blockId of [...blocks]) {
+                        if (holds(host.key, blockId)) continue;
 
-                    if (await destroyIfEmpty(client, id)) {
-                        ids.delete(id);
+                        if (!(await closeForGood(client, sessionId, blockId))) continue;
+
+                        blocks.delete(blockId);
                         changed = true;
+                    }
+
+                    if (blocks.size > 0 || held(host.key, sessionId)) continue;
+
+                    if (await destroyIfEmpty(client, sessionId)) {
+                        sessions.delete(sessionId);
+                        changed = true;
+                    } else {
+                        await stepOut(client, sessionId);
                     }
                 }
             } catch {
@@ -1023,6 +1327,32 @@ export default function createRex(_host: Host | null, web: Web) {
         }
 
         if (changed) saveLedger();
+    }
+
+    /**
+     * Closes a block that this module opened, and says whether there is nothing left to try: it closed, or Rex no
+     * longer has it. A block that would not close stays in the ledger, for a later look to try again.
+     */
+    async function closeForGood(client: RexClient, sessionId: string, blockId: string): Promise<boolean> {
+        try {
+            await client.call("block.close", { session_id: sessionId, block_id: blockId });
+
+            return true;
+        } catch (error) {
+            return (
+                error instanceof RexCallError &&
+                (error.code === "not_found" || error.code === "block_not_found" || error.code === "session_not_found")
+            );
+        }
+    }
+
+    /** Whether this module holds a terminal of the block, whether that terminal is still running or not. */
+    function holds(hostKey: string, blockId: string): boolean {
+        for (const terminal of terminals.values()) {
+            if (terminal.hostKey === hostKey && terminal.blockId === blockId) return true;
+        }
+
+        return false;
     }
 
     /** Whether this module holds a terminal of the session, whether that terminal is still running or not. */
@@ -1057,13 +1387,13 @@ export default function createRex(_host: Host | null, web: Web) {
     /** Ends the terminals of the sessions that this person sees as archived, for an archive that this module did not hear. */
     function closeArchived(sessions: readonly WebSession[]): void {
         for (const session of sessions) {
-            if (session.archived) close(session.id);
+            if (session.archived) void close(session.id);
         }
     }
 
     // Pi Pocket sends this after the archive is stored. An older server sends none, and the routes' own check covers it.
     const stop = _host?.on?.("session.archived", ({ conversationId, archived }) => {
-        if (archived) close(conversationId);
+        if (archived) void close(conversationId);
     });
 
     if (typeof stop === "function") web.onDispose(stop);
@@ -1158,7 +1488,7 @@ export default function createRex(_host: Host | null, web: Web) {
         return { ok: true, label, endpoint };
     });
 
-    // A new session on a machine, with a shell in it: the row that Rex's own picker has at the bottom.
+    // A shell in the one session, on the machine that the page named: the row that Rex's own picker has at the bottom.
     web.route("POST", "sessions", async (request) => {
         const named = String(request.body.host ?? "");
         const host = named === "" ? await ownHost() : await hostOf(named);
@@ -1166,20 +1496,15 @@ export default function createRex(_host: Host | null, web: Web) {
         const cwd = String(request.body.cwd ?? "") || homedir();
 
         const client = await online(host);
-        const made = await client.call<{ session_id?: string }>("session.create", {
-            ...(label === "" ? {} : { label }),
-            initial_windows: [{ layout: { block: { flavor: `${TERMINAL_CREATOR}.shell`, options: { cwd } } } }],
-        });
+        const sessionId = await pocketSession(host);
 
-        if (typeof made.session_id !== "string" || made.session_id === "") {
-            throw web.error(502, "Rex made no session.");
-        }
+        // A session that this page is not a viewer of will not own a block for it.
+        await client.call("session.attach", { session_id: sessionId });
 
-        remember(host.key, made.session_id);
+        const windows = (await view(client, sessionId)).windows ?? [];
+        const shell = await newShell(client, host.key, sessionId, label === "" ? POCKET_SESSION : label, cwd, takenOf(windows));
 
-        const made_ = (await client.sessions()).find((each) => each.session_id === made.session_id);
-
-        return { host: host.key, session: made.session_id, label: made_?.label ?? made.session_id };
+        return { host: host.key, session: sessionId, window: shell.windowId, block: shell.blockId, label: shell.windowLabel };
     });
 
     web.route("POST", "terminals", async (request) => {
@@ -1189,19 +1514,30 @@ export default function createRex(_host: Host | null, web: Web) {
         const rows = size(request.body.rows, 5, 200, 24);
         const conversation = Number(request.body.conversation) || 0;
 
-        // A page that names a session shows that one. A page that names none is this conversation's own terminal, which
-        // is a session of the person's on this machine, made for the conversation the first time that it is asked for.
-        const named = String(request.body.host ?? "") !== "" && String(request.body.session ?? "") !== "";
+        // A page that names a machine shows a shell on that one, which is what a person picked. A page that names none
+        // is this conversation's own terminal, which runs where Pi Pocket runs.
+        const named = String(request.body.host ?? "");
         // The bar's New shell: another shell where this one is, rather than the one that is already there.
         const fresh = request.body.new === true;
-        const host = named ? await hostOf(String(request.body.host)) : await ownHost();
-        const sessionId =
-            named && !fresh ? String(request.body.session) : await ownSession(host, conversation, request.sessions(), cols, rows, fresh);
+        // A shell that a person picked on the rail: its session, and the block of the window that they tapped. The
+        // shell in it is one that Rex already had.
+        const pickedSession = String(request.body.session ?? "").trim();
+        const pickedBlock = String(request.body.block ?? "").trim();
+        const picked = pickedSession !== "" && pickedBlock !== "";
+        const host = named === "" ? await ownHost() : await hostOf(named);
+        const client = await online(host);
+        const sessionId = picked ? pickedSession : await pocketSession(host);
 
-        // One terminal for each block: a page that reloads finds the one that it left rather than a second stream.
-        const existing = [...terminals.values()].find(
-            (each) => each.alive && each.hostKey === host.key && each.sessionId === sessionId,
-        );
+        // A session that this page is not a viewer of will not own a block for it, and a window is no use to a page
+        // that cannot see it.
+        await client.call("session.attach", { session_id: sessionId });
+
+        const shell = picked
+            ? await shellAt(client, host.key, sessionId, pickedBlock)
+            : await shellFor(request, host, sessionId, conversation, fresh);
+
+        // One terminal for each shell: a page that reloads finds the one that it left rather than a second stream.
+        const existing = [...terminals.values()].find((each) => each.alive && each.hostKey === host.key && each.blockId === shell.blockId);
 
         if (existing !== undefined) {
             if (existing.cols !== cols || existing.rows !== rows) {
@@ -1224,7 +1560,7 @@ export default function createRex(_host: Host | null, web: Web) {
             throw web.error(429, `That is ${MAX_TERMINALS} terminals at once. End one first.`);
         }
 
-        const terminal = await start(request, host, sessionId, conversation, cols, rows);
+        const terminal = await start(request, host, sessionId, shell, conversation, cols, rows);
 
         const timer = setTimeout(() => {
             if (!terminal.alive) terminals.delete(terminal.id);

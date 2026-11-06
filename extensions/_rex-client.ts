@@ -62,6 +62,31 @@ export interface RexSession {
     [field: string]: unknown;
 }
 
+/** One block of a window, as `session.view` reports it. Only `block_id` is promised. */
+export interface RexBlock {
+    block_id?: string | null;
+    creator_name?: string;
+    flavor?: string;
+    label?: string;
+}
+
+/** One window of a session, with the layers that hold its blocks, as `session.view` reports it. */
+export interface RexWindow {
+    window_id: string;
+    label?: string;
+    focused_block_id?: string | null;
+    layers?: Array<{ blocks?: RexBlock[] | null }> | null;
+}
+
+/** One session's windows and their blocks, as `session.view` reports them. */
+export interface RexView {
+    session_id?: string | null;
+    label?: string;
+    revision?: number;
+    active_window_id?: string | null;
+    windows?: RexWindow[] | null;
+}
+
 /** One entry of a server's host list, as `hosts.list` reports it. */
 export interface RexHostEntry {
     id: string;

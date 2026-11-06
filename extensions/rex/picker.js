@@ -62,22 +62,25 @@ export function iconPathOf(name) {
 }
 
 /**
- * The hosts and sessions that match a filter, as Rex filters them: a session shows when its name or its machine's name
- * holds the text, and a machine shows when it or any session under it does.
+ * The hosts, sessions, and windows that match a filter, as Rex filters them: a session shows when its name, the name of
+ * one of its windows, or its machine's name holds the text, and a machine shows when it or any session under it does.
  */
 export function filtered(hosts, query) {
     const wanted = query.trim().toLowerCase();
 
     if (wanted === "") return hosts;
 
+    const holds = (text) => String(text ?? "").toLowerCase().includes(wanted);
+    const holdsWindow = (session) => (session.windows ?? []).some((window) => holds(window.label));
+
     return hosts
         .map((host) => {
-            const machine = host.label.toLowerCase().includes(wanted);
+            const machine = holds(host.label);
 
             return {
                 ...host,
-                sessions: machine ? host.sessions : host.sessions.filter((session) => session.label.toLowerCase().includes(wanted)),
-                kept: machine || host.sessions.some((session) => session.label.toLowerCase().includes(wanted)),
+                sessions: machine ? host.sessions : host.sessions.filter((session) => holds(session.label) || holdsWindow(session)),
+                kept: machine || host.sessions.some((session) => holds(session.label) || holdsWindow(session)),
             };
         })
         .filter((host) => host.kept);
@@ -92,13 +95,16 @@ function stateOf(host) {
     return count === 1 ? "1 session" : `${count} sessions`;
 }
 
-const Machine = ({ pocket, host, onOpen, picked }) => {
+const Machine = ({ pocket, host, onOpen, here, openSession, openWindow }) => {
     const { html } = pocket;
 
     return html`<li class="gt-machine">
         <div class="gt-machine-head">
             <span class="gt-machine-icon">
                 <${Mark} pocket=${pocket} path=${iconPathOf(host.icon)} />
+            </span>
+            <span class="gt-session-tick" aria-hidden="true">
+                ${here ? html`<${Mark} pocket=${pocket} path=${TICK} size=${14} />` : null}
             </span>
             <span class="gt-machine-name">${host.label}</span>
             ${host.local ? html`<span class="gt-machine-tag">this machine</span>` : null}
@@ -113,15 +119,33 @@ const Machine = ({ pocket, host, onOpen, picked }) => {
             : html`<ul class="gt-sessions">
                   ${host.sessions.map(
                       (session) => html`<li key=${session.id}>
-                          <button
-                              class="gt-session ${picked(host, session) ? "is-picked" : ""}"
-                              onClick=${() => onOpen(host, session)}
-                          >
+                          <button class="gt-session ${openSession(host, session) ? "is-picked" : ""}" onClick=${() => onOpen(host)}>
                               <span class="gt-session-tick" aria-hidden="true">
-                                  ${picked(host, session) ? html`<${Mark} pocket=${pocket} path=${TICK} size=${14} />` : null}
+                                  ${openSession(host, session) ? html`<${Mark} pocket=${pocket} path=${TICK} size=${14} />` : null}
                               </span>
                               <span class="gt-session-name">${session.label}</span>
                           </button>
+                          ${(session.windows ?? []).length === 0
+                              ? null
+                              : html`<ul class="gt-windows">
+                                    ${(session.windows ?? []).map(
+                                        (window) => html`<li key=${window.id}>
+                                            <button
+                                                class="gt-window ${openWindow(host, window) ? "is-picked" : ""}"
+                                                disabled=${window.block === ""}
+                                                title=${window.block === "" ? "This window holds no terminal" : window.id}
+                                                onClick=${() => onOpen(host, { session: session.id, block: window.block })}
+                                            >
+                                                <span class="gt-window-tick" aria-hidden="true">
+                                                    ${openWindow(host, window)
+                                                        ? html`<${Mark} pocket=${pocket} path=${TICK} size=${12} />`
+                                                        : null}
+                                                </span>
+                                                <span class="gt-window-name">${window.label === "" ? "Window" : window.label}</span>
+                                            </button>
+                                        </li>`,
+                                    )}
+                                </ul>`}
                       </li>`,
                   )}
               </ul>`}
@@ -131,6 +155,9 @@ const Machine = ({ pocket, host, onOpen, picked }) => {
 /**
  * The page: every machine that the module can reach, and the sessions under each. It reads again every few seconds,
  * because a session that a person opens on their laptop should show on their phone without a reload.
+ *
+ * A row under a machine says what Rex holds there. A tap on any of them opens this conversation's own terminal on that
+ * machine, since the terminal that Pi Pocket shows is always the one in the Pi Pocket session.
  */
 export function PickerPage({ pocket, onOpen, onOpenOwn }) {
     const { html, useEffect, useRef, useState } = pocket;
@@ -171,8 +198,8 @@ export function PickerPage({ pocket, onOpen, onOpenOwn }) {
         };
     }, []);
 
-    // Rex's own picker ends with a row that starts a session, and this one starts it on the machine that Pi Pocket
-    // runs on: the one a person is already using.
+    // Rex's own picker ends with a row that starts a session, and this one starts a shell in the Pi Pocket session on
+    // the machine that Pi Pocket runs on: the one a person is already using.
     const create = async () => {
         setCreating(true);
 
@@ -180,7 +207,7 @@ export function PickerPage({ pocket, onOpen, onOpenOwn }) {
             const made = await pocket.api("sessions", {}, { method: "POST" });
 
             setError(null);
-            onOpen({ key: made.host }, { id: made.session, label: made.label });
+            onOpen({ key: made.host }, { session: made.session, block: made.block });
         } catch (failure) {
             setError(failure.message);
         } finally {
@@ -207,11 +234,14 @@ export function PickerPage({ pocket, onOpen, onOpenOwn }) {
         }
     };
 
-    // The session that the terminal shows now, and whether it is this conversation's own rather than one that was
-    // chosen: a tick says which row a person already has open.
+    // What the terminal shows now: the machine, and the window of it when a person picked one rather than leaving the
+    // terminal on this conversation's own. A tick says which one a person already has open.
     const now = chosen();
     const mine = typeof pocket.conversationId === "function" ? pocket.conversationId() : null;
-    const picked = (host, session) => now !== null && now.host === host.key && now.session === session.id;
+    const here = (host) => now !== null && now.host === host.key;
+    const openSession = (host, session) => now !== null && now.host === host.key && now.session === session.id && !now.block;
+    const openWindow = (host, window) =>
+        now !== null && now.host === host.key && typeof now.block === "string" && now.block !== "" && now.block === window.block;
 
     const hosted = filtered(listing ?? [], query);
     const machines = hosted.length;
@@ -263,7 +293,15 @@ export function PickerPage({ pocket, onOpen, onOpenOwn }) {
             : null}
         <ul class="gt-list-rows">
             ${hosted.map(
-                (host) => html`<${Machine} key=${host.key} pocket=${pocket} host=${host} onOpen=${onOpen} picked=${picked} />`,
+                (host) => html`<${Machine}
+                    key=${host.key}
+                    pocket=${pocket}
+                    host=${host}
+                    onOpen=${onOpen}
+                    here=${here(host)}
+                    openSession=${openSession}
+                    openWindow=${openWindow}
+                />`,
             )}
         </ul>
         <div class="gt-picker-foot">
@@ -300,7 +338,7 @@ export function PickerPage({ pocket, onOpen, onOpenOwn }) {
                   </div>`
                 : html`<button class="gt-session gt-new" disabled=${creating} onClick=${create}>
                           <${Mark} pocket=${pocket} path=${NEW_SESSION_ICON} />
-                          <span class="gt-session-name">${creating ? "Starting…" : "New session"}</span>
+                          <span class="gt-session-name">${creating ? "Starting…" : "New shell"}</span>
                       </button>
                       <button class="gt-session gt-new" onClick=${() => setAdding(true)}>
                           <${Mark} pocket=${pocket} path=${iconPathOf("globe")} />

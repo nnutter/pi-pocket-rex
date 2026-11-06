@@ -5,8 +5,9 @@ VT engine ([`libghostty-vt`](https://github.com/prime-radiant-inc/ts-libghostty)
 
 The shell is not this extension's. It lives in a Rex session, on this machine or on another one over Tailscale, where Rex
 keeps it and where a person can also reach it from Rex's own app. This extension is a window onto those terminals: it
-picks a session the way Rex's picker does, opens that session's terminal, draws its screen in a panel or a page, and
-sends what a person types back as the events that the block takes.
+opens one Rex session of its own, named **Pi Pocket**, gives each conversation a window in it, named after the
+conversation, draws that window's shell in a panel or a page, and sends what a person types back as the events that the
+block takes.
 
 ## What it needs
 
@@ -39,7 +40,12 @@ dock, and takes a **tile in the places**. `Control+Backquote` opens and closes i
 ## The picker
 
 **Rex sessions**, on the rail, is the tree that Rex's own picker shows: a filter, a heading for each machine with the
-icon that the machine gave itself, and the sessions under it. A tap opens that session's terminal.
+icon that the machine gave itself, the sessions under it, and the windows of each session under those. A tap on a
+session says which machine to open on, and the terminal is this conversation's window in the Pi Pocket session there. A
+tap on a **window** opens the shell that the window already holds, wherever it is: a shell that a person started in Rex,
+or the window of another conversation of Pi Pocket. That shell keeps its own program, and the terminal only watches it.
+A window that holds no terminal, such as one a person split for an editor, stays on the list without a tap, because a
+page cannot draw one.
 
 The machines come from three places, and two entries for one machine are one row:
 
@@ -49,28 +55,31 @@ The machines come from three places, and two entries for one machine are one row
 
 A machine that will not answer is a row that says so, rather than a list that fails.
 
-The last two rows are Rex's own: **New session** starts a session on this machine with a shell in it, and **Add
+The last two rows are Rex's own: **New shell** starts a shell in the Pi Pocket session on this machine, and **Add
 machine…** names a machine that is in no list yet. A machine is written to this machine's Rex server, which is where Rex
 keeps its own list, so Rex.app shows it too; with no server here there is nothing to write it to, and the settings are
 the way in.
 
-The panel is the other way in: `Control+Backquote` opens **this conversation's own terminal**, which is a session of the
-person's on this machine, named after the conversation and started in its folder the first time that it is asked for. A
-person who comes back to it — after a reload, or from another tab — finds the same one, because it is found by name
-rather than remembered by a number.
+The panel is the other way in: `Control+Backquote` opens **this conversation's own terminal**, which is a window in the
+Pi Pocket session on this machine, named after the conversation and started in its folder the first time that it is
+asked for. A person who comes back to it — after a reload, or from another tab — finds the same window, because it is
+found by name rather than remembered by a number.
 
-## Choosing another session
+## Choosing another machine or window
 
 There are two ways to the picker, and either one is two taps:
 
 - the **globe** in the terminal's bar, which puts the terminal away and shows the list;
 - **Rex sessions** on the rail, or in the launcher.
 
-The session that the terminal shows has a **tick** beside it. Tap another one and the terminal opens on that session,
-from then on: `Control+Backquote` returns to it, and the bar says which machine and session it is. Tap **This
-conversation's own terminal**, at the top of the list, to come back to the one that belongs to the conversation.
+The machine that the terminal is on has a **tick** beside it, and so does the window that it shows. Tap a session under
+another machine and the terminal opens this conversation's window there. Tap a window and the terminal opens the shell
+in that window. From then on `Control+Backquote` returns to the same one, and the bar says which machine and window it
+is. Tap **This conversation's own terminal**, at the top of the list, to come back to this machine.
 
-A session that was open before keeps running in Rex when another one is chosen: the terminal only stops watching it.
+A shell that was open before keeps running in Rex when another one is chosen: the terminal only stops watching it. A
+window that the terminal only watches is never closed by Pi Pocket, not when the terminal goes, and not when the
+conversation is archived: that shell belongs to the program that was in it.
 
 ## How it is put together
 
@@ -140,23 +149,27 @@ that a signal stopped keeps the panel with what happened and a **New shell** but
 
 A shell lives in Rex, not in the page, so closing the panel, or reloading the page, leaves it running. A tab of the app
 says that it is here, and says goodbye when it goes; when the last tab has gone, the module ends what no tab is watching.
-Each block that it opened closes, and a Rex session that is left with no block in it is destroyed. Rex closes a window
-by itself when its last block leaves, and it keeps an empty session, so without this every conversation would leave one
-behind.
+Each block that it opened closes. Rex closes a window by itself when its last block leaves, and it keeps an empty
+session, so the module destroys the Pi Pocket session once no block is left in it; the next terminal makes it again.
+
+**Archiving a conversation** is the other way that a terminal ends, and it does not wait for a tab to go. That
+conversation's block closes rather than being given back, so its window closes with it and the windows of the other
+conversations stay as they are. The session goes only if that was its last window.
 
 A session that still holds a block stays: an editor, or a program that a person started in Rex beside the shell. A
 reload is a goodbye and a hello a moment apart, so the module waits ten seconds before it ends anything.
 
 A tab that **dies** — a crashed browser, a phone that lost its network, a Pi Pocket that a restart took — says no
-goodbye, and would leave its session behind for good. So the module writes down the sessions that it makes, in
-`~/.pi-pocket/rex/made.json` (`PI_POCKET_DIR` moves the folder), and a tab that says hello is the moment that it looks at
-them: every session in that file that holds no block is destroyed. Whether a client has the session open says nothing
-about a person's work, because Rex.app stays attached to every session there is, so an empty one is a leftover. A look
-waits a minute before the next one, since a reload is a hello too.
+goodbye, and would leave its shells behind for good. So the module writes down the session that it makes, and the blocks
+that it opened in it, in `~/.pi-pocket/rex/made.json` (`PI_POCKET_DIR` moves the folder), and a tab that says hello is the
+moment that it looks at them: every block in that file that no terminal holds is closed, and a session in it that no
+block is left in is destroyed. Whether a client has the session open says nothing about a person's work, because Rex.app
+stays attached to every session there is, so an empty one is a leftover. A look waits a minute before the next one, since
+a reload is a hello too.
 
 Nothing outside that file is ever destroyed: a session that Rex.app made, or that a person made with the Rex CLI, is not
-the module's to end, however empty it is. A session that Pi Pocket made before this list existed is left as it is, and
-`rex session ls` and `rex session kill <id>` are the way to clear one.
+the module's to end, however empty it is. A session that an older Pi Pocket made for a conversation is such a session,
+because the file that it kept was a list of names; `rex session ls` shows it, and `rex session kill <id>` clears it.
 
 ## The font
 
@@ -170,7 +183,8 @@ A person's own Nerd font is one line away — put its name above `"Pocket Mono"`
 - **No mouse, no images.** Keys and text go in; the screen comes out. Kitty graphics and mouse tracking are not wired, so
   clicking a file name in a full-screen program does nothing.
 - **A terminal outlives a panel.** The shell is Rex's, so closing the panel, or restarting the server, leaves it
-  running; closing the last tab of the app is what ends it (see [When the last tab closes](#when-the-last-tab-closes)).
+  running; closing the last tab of the app, or archiving the conversation, is what ends it (see [When the last tab
+  closes](#when-the-last-tab-closes)).
 - **The terminals are the owner's.** A drop-in runs with its owner's rights, and so does anything typed in this page. The
   panel and its routes are for the owner alone; guests and viewers get no route at all.
 
