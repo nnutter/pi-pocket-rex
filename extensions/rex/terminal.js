@@ -274,7 +274,7 @@ export class TerminalView {
         this.#onState = onState;
         this.#onClose = onClose;
         this.#keyboardUp = keyboardUp ?? (() => false);
-        // The Rex session whose terminal this page shows, as the picker chose it.
+        // The machine that this page shows a terminal on, as the picker chose it; no choice is this machine.
         this.#target = target ?? (() => ({}));
         this.#font = Number(globalThis.localStorage?.getItem("x.rex.font")) || 13;
 

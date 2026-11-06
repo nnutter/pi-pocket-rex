@@ -512,8 +512,8 @@ export default function setup(pocket) {
     };
 
     /**
-     * The Rex session that the terminal shows, kept where a reload finds it: the picker chooses it, and the terminal page
-     * opens on the terminal of the session that was chosen last.
+     * The machine that the terminal shows, kept where a reload finds it: the picker chooses it, and the terminal page
+     * opens on that machine. Which session and window it shows is the module's to say.
      */
     const CHOSEN = "x.rex.target";
 
@@ -525,22 +525,22 @@ export default function setup(pocket) {
         }
     };
 
-    /** What the terminal page adds to its call: the machine and the session, and nothing when none was chosen. */
+    /** What the terminal page adds to its call: the machine, and nothing when none was chosen. */
     const targetOf = () => {
         const found = chosen();
 
-        return found === null ? {} : { host: found.host, session: found.session };
+        return found === null ? {} : { host: found.host };
     };
 
-    /** A session from the picker: it becomes the one that the terminal shows, and the terminal opens on it. */
-    const open = (host, session) => {
-        globalThis.localStorage?.setItem(CHOSEN, JSON.stringify({ host: host.key, session: session.id, label: session.label }));
+    /** A machine from the picker: it becomes the one that the terminal opens on. */
+    const open = (host) => {
+        globalThis.localStorage?.setItem(CHOSEN, JSON.stringify({ host: host.key }));
 
         if (canPanel && pocket.conversationId() !== null) pocket.openPanel("terminal");
         else pocket.openPage("terminal");
     };
 
-    /** Back to the terminal that belongs to this conversation, after a session of someone else's was chosen. */
+    /** Back to the terminal that belongs to this conversation, on the machine that Pi Pocket runs on. */
     const openOwn = () => {
         globalThis.localStorage?.removeItem(CHOSEN);
 
@@ -548,7 +548,7 @@ export default function setup(pocket) {
         else pocket.openPage("terminal");
     };
 
-    /** The picker, from the terminal's own bar: choosing another session should not mean leaving the terminal first. */
+    /** The picker, from the terminal's own bar: choosing another machine should not mean leaving the terminal first. */
     const chooseSession = () => pocket.openPage("sessions");
 
     /** The terminal, on the surface that it is given: `pocket.page` and `pocket.panel` both take the fields that it has. */
@@ -594,7 +594,8 @@ export default function setup(pocket) {
     }
 
     // Every machine that Rex can reach, with the sessions under each: the same form as Rex's own picker, so that a
-    // person finds their work on their phone the way that they find it on their laptop. A session opens its terminal.
+    // person finds their work on their phone the way that they find it on their laptop. A tap opens this conversation's
+    // terminal on that machine.
     function Sessions() {
         return html`<${PickerPage} pocket=${pocket} onOpen=${open} onOpenOwn=${openOwn} />`;
     }
@@ -632,7 +633,7 @@ export default function setup(pocket) {
     document.addEventListener("keydown", onKey, true);
     pocket.onDispose(() => document.removeEventListener("keydown", onKey, true));
 
-    // The tabs of the app say that they are here, so that the shells of the last one that goes do not keep a session
+    // The tabs of the app say that they are here, so that the shells of the last one that goes do not keep a window
     // alive in Rex.
     followTab(pocket);
 }
