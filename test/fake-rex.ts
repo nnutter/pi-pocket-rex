@@ -39,6 +39,8 @@ export interface FakeRex {
     sockets: Set<unknown>;
     /** The bytes that each data connection sent: a hello, or a resume. */
     dataMessages: Uint8Array[];
+    /** Sends an event to every control connection, as a Rex server does when something happens in a session. */
+    pushEvent: (event: unknown) => void;
     /** Sends bytes to every open data connection, as a terminal's program would. */
     push: (bytes: Uint8Array) => void;
     /** Closes every data connection, as a network that dropped would. */
@@ -391,6 +393,10 @@ export function fakeRex(options: FakeRexOptions = {}): FakeRex {
         dataMessages,
         push: (bytes) => {
             for (const socket of dataSockets) (socket as { send: (value: Uint8Array) => void }).send(bytes);
+        },
+        // An event to every control connection, as a Rex server sends one when something happens in a session.
+        pushEvent: (event) => {
+            for (const socket of sockets) (socket as { send: (value: string) => void }).send(JSON.stringify({ type: "event", payload: event }));
         },
         // 1001 is a connection that went away: not a stream that the block ended, which a resume must not restart.
         drop: () => {

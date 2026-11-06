@@ -4,7 +4,7 @@
  *
  * The runner is the real one, with `libghostty-vt` in this repository, so a frame here is the frame a page draws.
  */
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -402,6 +402,48 @@ test("lists the terminals that it holds, with the machine that each is on", asyn
     expect(listing.max).toBe(8);
     expect(listing.terminals).toHaveLength(1);
     expect(listing.terminals[0]).toMatchObject({ id: terminal.id, host: server.url, alive: true });
+});
+
+test("lets a terminal that ended long ago leave the list", async () => {
+    const server = serve();
+    const fake = module(server);
+
+    const { terminal } = await open(fake, server);
+
+    // The program in the shell exits, which is what Rex says when a shell ends.
+    server.pushEvent({
+        type: "session_event",
+        payload: {
+            session_id: "session:1",
+            event: {
+                type: "block_event",
+                payload: { block_id: terminal.block, name: "child_exited", payload: { exit_code: 0 } },
+            },
+        },
+    });
+
+    await Bun.sleep(100);
+
+    const now = Date.now();
+
+    try {
+        setSystemTime(new Date(now + 60_000));
+
+        const soon = await fake.call<{ terminals: Array<Summary> }>({ method: "GET", path: "terminals" });
+
+        // A terminal that just ended stays in the list, so that its page can say what happened.
+        expect(soon.terminals).toHaveLength(1);
+        expect(soon.terminals[0]).toMatchObject({ id: terminal.id, alive: false });
+
+        setSystemTime(new Date(now + 16 * 60_000));
+
+        const later = await fake.call<{ terminals: Array<Summary> }>({ method: "GET", path: "terminals" });
+
+        // And it leaves the list after a while, which the wait counts from the moment that it ended.
+        expect(later.terminals).toHaveLength(0);
+    } finally {
+        setSystemTime(new Date(now));
+    }
 });
 
 test("gives the block back when a person ends the terminal, and leaves the Rex session running", async () => {

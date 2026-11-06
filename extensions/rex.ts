@@ -97,6 +97,8 @@ interface Terminal {
     createdAt: number;
     title: string;
     alive: boolean;
+    /** When the terminal ended, so that the list can let it go after a while. */
+    endedAt: number | null;
     exitCode: number | null;
     signal: string | null;
     proc: ChildProcessWithoutNullStreams;
@@ -1125,8 +1127,25 @@ export default function createRex(_host: Host | null, web: Web) {
         terminal.alive = false;
         terminal.exitCode = code;
         terminal.signal = null;
+        terminal.endedAt = Date.now();
 
         web.send("exit", { id: terminal.id, code, signal: null });
+    }
+
+    /**
+     * The terminals that ended long ago, which leave the list.
+     *
+     * A terminal that ended stays in the list for a while, so that the page that shows the list can say what happened
+     * to it. The wait starts when the terminal ends, not when it was made.
+     */
+    function forgetEnded(): void {
+        const now = Date.now();
+
+        for (const [id, terminal] of terminals) {
+            if (terminal.endedAt === null || now - terminal.endedAt < KEEP_ENDED_MS) continue;
+
+            terminals.delete(id);
+        }
     }
 
     /** Starts the runner, which draws the screen that the stream fills, and gives the terminal its process. */
@@ -1185,12 +1204,7 @@ export default function createRex(_host: Host | null, web: Web) {
         });
 
         proc.on("exit", (code) => {
-            if (terminal.alive) {
-                terminal.alive = false;
-                terminal.exitCode = code;
-                terminal.signal = null;
-                web.send("exit", { id: terminal.id, code, signal: null });
-            }
+            if (terminal.alive) ended(terminal, code);
         });
 
         terminal.proc = proc;
@@ -1241,6 +1255,7 @@ export default function createRex(_host: Host | null, web: Web) {
             createdAt: Date.now(),
             title: "",
             alive: true,
+            endedAt: null,
             exitCode: null,
             signal: null,
             proc: null as unknown as ChildProcessWithoutNullStreams,
@@ -1672,6 +1687,9 @@ export default function createRex(_host: Host | null, web: Web) {
     web.route("GET", "terminals", (request) => {
         closeArchived(request.sessions());
 
+        // The terminals that ended long ago leave the list when it is read.
+        forgetEnded();
+
         return {
             // Every terminal, with the session that it was opened from: the page that lists them all says whose each one
             // is, so that a person can tell the terminal beside their work from the one that a closed tab left behind.
@@ -1799,12 +1817,6 @@ export default function createRex(_host: Host | null, web: Web) {
         }
 
         const terminal = await start(request, host, sessionId, shell, conversation, cols, rows);
-
-        const timer = setTimeout(() => {
-            if (!terminal.alive) terminals.delete(terminal.id);
-        }, KEEP_ENDED_MS);
-
-        timer.unref();
 
         return { terminal: summary(terminal), frame: snapshot(terminal) };
     });
