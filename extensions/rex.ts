@@ -105,6 +105,12 @@ interface Watched {
     blocks: string[];
 }
 
+/**
+ * The sessions that this module made, by the machine that holds each one, and the blocks that it opened in each of
+ * them.
+ */
+type Ledger = Map<string, Map<string, Set<string>>>;
+
 export default function createRex(_host: Host | null, web: Web) {
     const terminals = new Map<string, Terminal>();
 
@@ -126,27 +132,44 @@ export default function createRex(_host: Host | null, web: Web) {
     /** Pi Pocket's data folder, which a person can move with `PI_POCKET_DIR`: where a module keeps what it remembers. */
     const dataFolder = (process.env.PI_POCKET_DIR ?? "").trim() || join(homedir(), ".pi-pocket");
 
-    /** The file of the sessions that this module made. */
+    /** The file of the sessions and blocks that this module made. */
     const ledgerFile = join(dataFolder, "rex", MADE_FILE);
 
     /**
-     * The sessions that this module made, by the endpoint of the machine that holds each one.
+     * The sessions that this module made, by the endpoint of the machine that holds each one, and the blocks that it
+     * opened in each of them.
      *
      * Rex keeps a session that has lost its last block, and a tab that dies says no goodbye, so nothing on the Rex side
      * would ever close the session that such a tab leaves. A file is what makes the next look work after the restart
-     * that lost the goodbye, and Pi Pocket's data folder is where a module's own state belongs.
+     * that lost the goodbye, and Pi Pocket's data folder is where a module's own state belongs. The blocks are in it
+     * for the same reason: a terminal that this module opened is only its own while it holds it.
      */
     const ledger = readLedger();
 
     /** The ledger as it is on disk: empty when it is not there, or when a half-written save left what is not a ledger. */
-    function readLedger(): Map<string, Set<string>> {
-        const kept = new Map<string, Set<string>>();
+    function readLedger(): Ledger {
+        const kept: Ledger = new Map();
 
         try {
             const held = JSON.parse(readFileSync(ledgerFile, "utf8")) as Record<string, unknown>;
 
-            for (const [host, ids] of Object.entries(held)) {
-                if (Array.isArray(ids)) kept.set(host, new Set(ids.filter((each) => typeof each === "string")));
+            for (const [host, made] of Object.entries(held)) {
+                const sessions = new Map<string, Set<string>>();
+
+                // The ledger of the version that kept sessions alone, whose blocks it never wrote down.
+                if (Array.isArray(made)) {
+                    for (const each of made) if (typeof each === "string") sessions.set(each, new Set());
+                }
+
+                if (made !== null && typeof made === "object" && !Array.isArray(made)) {
+                    for (const [sessionId, blocks] of Object.entries(made as Record<string, unknown>)) {
+                        if (!Array.isArray(blocks)) continue;
+
+                        sessions.set(sessionId, new Set(blocks.filter((each) => typeof each === "string")));
+                    }
+                }
+
+                if (sessions.size > 0) kept.set(host, sessions);
             }
         } catch {
             // A module that remembers nothing is a module that ends nothing that it did not make, which is the safe way
@@ -158,9 +181,17 @@ export default function createRex(_host: Host | null, web: Web) {
 
     /** Writes the ledger down, so that the next run of this module can find what this one made. */
     function saveLedger(): void {
-        const held: Record<string, string[]> = {};
+        const held: Record<string, Record<string, string[]>> = {};
 
-        for (const [host, ids] of ledger) if (ids.size > 0) held[host] = [...ids];
+        for (const [host, sessions] of ledger) {
+            if (sessions.size === 0) continue;
+
+            const made: Record<string, string[]> = {};
+
+            for (const [sessionId, blocks] of sessions) made[sessionId] = [...blocks];
+
+            held[host] = made;
+        }
 
         try {
             mkdirSync(dirname(ledgerFile), { recursive: true });
@@ -173,23 +204,50 @@ export default function createRex(_host: Host | null, web: Web) {
 
     /** Says that this module made a session, so that a look after a restart can find it. */
     function remember(hostKey: string, sessionId: string): void {
-        const ids = ledger.get(hostKey) ?? new Set<string>();
+        const sessions = ledger.get(hostKey) ?? new Map<string, Set<string>>();
 
-        ledger.set(hostKey, ids);
+        ledger.set(hostKey, sessions);
 
-        if (ids.has(sessionId)) return;
+        if (sessions.has(sessionId)) return;
 
-        ids.add(sessionId);
+        sessions.set(sessionId, new Set());
         saveLedger();
     }
 
     /** Says that a session that this module made is gone. */
     function forget(hostKey: string, sessionId: string): void {
-        const ids = ledger.get(hostKey);
+        const sessions = ledger.get(hostKey);
 
-        if (ids === undefined || !ids.delete(sessionId)) return;
+        if (sessions === undefined || !sessions.delete(sessionId)) return;
 
         saveLedger();
+    }
+
+    /** Says that this module opened a block, so that a look after a restart can find it again. */
+    function rememberBlock(hostKey: string, sessionId: string, blockId: string): void {
+        remember(hostKey, sessionId);
+
+        const blocks = ledger.get(hostKey)?.get(sessionId);
+
+        if (blocks === undefined || blocks.has(blockId)) return;
+
+        blocks.add(blockId);
+        saveLedger();
+    }
+
+    /** Says that a block is no longer this module's: it closed the block, or gave it back. */
+    function forgetBlock(hostKey: string, blockId: string): void {
+        const sessions = ledger.get(hostKey);
+
+        if (sessions === undefined) return;
+
+        for (const blocks of sessions.values()) {
+            if (!blocks.delete(blockId)) continue;
+
+            saveLedger();
+
+            return;
+        }
     }
 
     /** The socket that a Rex server on this machine listens on, which is what `rex server status` prints. */
@@ -474,7 +532,10 @@ export default function createRex(_host: Host | null, web: Web) {
         }
 
         const cwd = sessions.find((each) => each.id === conversation)?.cwd ?? homedir();
-        const made = await client.call<{ session_id?: string }>("session.create", {
+        const made = await client.call<{
+            session_id?: string;
+            initial_windows?: Array<{ block_ids?: string[] | null }> | null;
+        }>("session.create", {
             ...(label === "" ? {} : { label }),
             initial_windows: [
                 {
@@ -494,6 +555,8 @@ export default function createRex(_host: Host | null, web: Web) {
         }
 
         remember(host.key, made.session_id);
+
+        for (const blockId of made.initial_windows?.[0]?.block_ids ?? []) rememberBlock(host.key, made.session_id, blockId);
 
         return made.session_id;
     }
@@ -782,6 +845,8 @@ export default function createRex(_host: Host | null, web: Web) {
             });
 
             blockId = made.block_ids?.[0] ?? "";
+
+            if (blockId !== "") rememberBlock(host.key, sessionId, blockId);
         }
 
         if (blockId === "") throw web.error(502, "Rex made no terminal for that session.");
@@ -904,6 +969,7 @@ export default function createRex(_host: Host | null, web: Web) {
      */
     function end(terminal: Terminal): void {
         unwatch(terminal);
+        forgetBlock(terminal.hostKey, terminal.blockId);
 
         void terminal.client
             .call("session.disown_block", { session_id: terminal.sessionId, block_ids: [terminal.blockId] })
@@ -1022,6 +1088,7 @@ export default function createRex(_host: Host | null, web: Web) {
     async function letGoOf(session: Watched): Promise<void> {
         for (const blockId of session.blocks) {
             await session.client.call("block.close", { session_id: session.sessionId, block_id: blockId }).catch(() => {});
+            forgetBlock(session.hostKey, blockId);
         }
 
         if (await destroyIfEmpty(session.client, session.sessionId)) forget(session.hostKey, session.sessionId);
@@ -1039,18 +1106,18 @@ export default function createRex(_host: Host | null, web: Web) {
         let changed = false;
 
         for (const host of await hostList()) {
-            const ids = ledger.get(host.key);
+            const sessions = ledger.get(host.key);
 
-            if (ids === undefined || ids.size === 0) continue;
+            if (sessions === undefined || sessions.size === 0) continue;
 
             try {
                 const client = await online(host);
 
-                for (const id of [...ids]) {
+                for (const id of [...sessions.keys()]) {
                     if (held(host.key, id)) continue;
 
                     if (await destroyIfEmpty(client, id)) {
-                        ids.delete(id);
+                        sessions.delete(id);
                         changed = true;
                     }
                 }
@@ -1204,7 +1271,10 @@ export default function createRex(_host: Host | null, web: Web) {
         const cwd = String(request.body.cwd ?? "") || homedir();
 
         const client = await online(host);
-        const made = await client.call<{ session_id?: string }>("session.create", {
+        const made = await client.call<{
+            session_id?: string;
+            initial_windows?: Array<{ block_ids?: string[] | null }> | null;
+        }>("session.create", {
             ...(label === "" ? {} : { label }),
             initial_windows: [{ layout: { block: { flavor: `${TERMINAL_CREATOR}.shell`, options: { cwd } } } }],
         });
@@ -1214,6 +1284,8 @@ export default function createRex(_host: Host | null, web: Web) {
         }
 
         remember(host.key, made.session_id);
+
+        for (const blockId of made.initial_windows?.[0]?.block_ids ?? []) rememberBlock(host.key, made.session_id, blockId);
 
         const made_ = (await client.sessions()).find((each) => each.session_id === made.session_id);
 

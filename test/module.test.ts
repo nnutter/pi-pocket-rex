@@ -75,9 +75,29 @@ function module(
     return Object.assign(fake, { state });
 }
 
-/** The ledger that a module in this test wrote: the sessions that it made, by the machine that holds each one. */
-function ledgerOf(state: string): Record<string, string[]> {
-    return JSON.parse(readFileSync(join(state, "rex", "made.json"), "utf8")) as Record<string, string[]>;
+/**
+ * The ledger that a module in this test wrote: the blocks that it opened, by the machine that holds them and the session
+ * that they are in. A ledger from the version that kept sessions alone reads as sessions with no blocks.
+ */
+function ledgerOf(state: string): Record<string, Record<string, string[]>> {
+    const held = JSON.parse(readFileSync(join(state, "rex", "made.json"), "utf8")) as Record<string, unknown>;
+    const kept: Record<string, Record<string, string[]>> = {};
+
+    for (const [host, made] of Object.entries(held)) {
+        const sessions: Record<string, string[]> = {};
+
+        if (Array.isArray(made)) {
+            for (const each of made) sessions[String(each)] = [];
+        } else if (made !== null && typeof made === "object") {
+            for (const [sessionId, blocks] of Object.entries(made as Record<string, unknown>)) {
+                sessions[sessionId] = Array.isArray(blocks) ? blocks.map(String) : [];
+            }
+        }
+
+        kept[host] = sessions;
+    }
+
+    return kept;
 }
 
 interface Summary {
@@ -367,7 +387,7 @@ test("keeps a session that another program is still in, when the conversation is
     // The shell that the conversation showed closes, and the editor that a person started in Rex stays.
     expect(methods(server)).toContain("block.close");
     expect(methods(server)).not.toContain("session.destroy");
-    expect(ledgerOf(fake.state)).toEqual({ [server.url]: ["session:1"] });
+    expect(ledgerOf(fake.state)).toEqual({ [server.url]: { "session:1": [] } });
 });
 
 test("makes a terminal in the session's folder when the session has none", async () => {
@@ -431,7 +451,7 @@ test("makes the conversation's own session when the page names none", async () =
     expect(created).toBeDefined();
     // The session carries the conversation's name and folder, and its shell starts in that folder.
     expect(created!.payload).toMatchObject({ label: "Here" });
-    expect(answer.terminal).toMatchObject({ host: server.url, session: server.made[0]!.session_id, block: "block:made" });
+    expect(answer.terminal).toMatchObject({ host: server.url, session: server.made[0]!.session_id, block: "block:made-1" });
 });
 
 test("comes back to the session that already has the conversation's name", async () => {
@@ -483,7 +503,8 @@ test("remembers the sessions that it made, so that a look after a restart can fi
     const server = serve();
     const fake = module(server);
 
-    // The conversation's own terminal, and the picker's own row: each makes a session, and both are this module's.
+    // The conversation's own terminal, and the picker's own row: each makes a session, and both are this module's,
+    // with the shell that this module opened in each of them.
     const own = await fake.call<{ terminal: Summary }>({
         method: "POST",
         path: "terminals",
@@ -491,7 +512,11 @@ test("remembers the sessions that it made, so that a look after a restart can fi
     });
     const picked = await fake.call<{ session: string }>({ method: "POST", path: "sessions", body: {} });
 
-    expect(ledgerOf(fake.state)).toEqual({ [server.url]: [own.terminal.session, picked.session] });
+    const held = ledgerOf(fake.state)[server.url] ?? {};
+
+    expect(Object.keys(held).sort()).toEqual([own.terminal.session, picked.session].sort());
+    expect(held[own.terminal.session]).toEqual([own.terminal.block]);
+    expect(held[picked.session]).toHaveLength(1);
 });
 
 test("adds a machine to the list that Rex keeps, so that Rex.app shows it too", async () => {
@@ -616,7 +641,7 @@ describe("the tabs of the app", () => {
 
             // The ledger is done with the session that it closed, and it keeps the one that stayed.
             expect(ledgerOf(mine.state)).toEqual({});
-            expect(ledgerOf(theirs.state)).toEqual({ [shared.url]: ["session:1"] });
+            expect(ledgerOf(theirs.state)).toEqual({ [shared.url]: { "session:1": [] } });
         },
         GRACE + 30_000,
     );
@@ -665,7 +690,7 @@ describe("the tabs of the app", () => {
         await until(server, "session.detach");
 
         expect(methods(server)).not.toContain("session.destroy");
-        expect(ledgerOf(fake.state)).toEqual({ [server.url]: ["session:1"] });
+        expect(ledgerOf(fake.state)).toEqual({ [server.url]: { "session:1": [] } });
     }, 30_000);
 
     test("leaves an empty session that it did not make", async () => {

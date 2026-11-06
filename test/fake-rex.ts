@@ -9,6 +9,20 @@ export interface FakeSession {
     label?: string;
 }
 
+/** A block of a window that this server made: the shell that a terminal opens on. */
+export interface FakeBlock {
+    block_id: string;
+    creator_name: string;
+    label: string;
+}
+
+/** A window of a session that this server made, with the blocks in it. */
+export interface FakeWindow {
+    window_id: string;
+    label: string;
+    blocks: FakeBlock[];
+}
+
 export interface FakeHost {
     id: string;
     label: string;
@@ -174,6 +188,23 @@ export function fakeRex(options: FakeRexOptions = {}): FakeRex {
     const closed = new Set<string>();
     const gone = new Set<string>();
 
+    /** The windows of each session that this server made, and the blocks in each of them. */
+    const windows = new Map<string, FakeWindow[]>();
+    let counted = 0;
+
+    /** A new block, with a name that no other block in this server has. */
+    function newBlock(creator_name = "com.superlogical.terminal", label = ""): FakeBlock {
+        counted += 1;
+
+        return { block_id: `block:made-${counted}`, creator_name, label };
+    }
+
+    function newWindow(label: string, blocks: FakeBlock[]): FakeWindow {
+        counted += 1;
+
+        return { window_id: `window:made-${counted}`, label, blocks };
+    }
+
     /** The sessions that the connection is attached to, which every method that takes one needs. */
     const attached = new Set<string>();
 
@@ -231,12 +262,97 @@ export function fakeRex(options: FakeRexOptions = {}): FakeRex {
             return {};
         }
         if (method === "session.create") {
-            const asked = payload as { label?: string };
+            const asked = payload as {
+                label?: string;
+                initial_windows?: Array<{ label?: string; window_label?: string; layout?: { block?: { label?: string } } }> | null;
+            };
             const created: FakeSession = { session_id: `session:made-${made.length + 1}`, label: asked.label ?? "made" };
 
             made.push(created);
 
-            return { session_id: created.session_id };
+            const opened = (asked.initial_windows ?? []).map((each) =>
+                newWindow(each.window_label ?? each.label ?? "", [newBlock("com.superlogical.terminal", each.layout?.block?.label ?? "")]),
+            );
+
+            windows.set(created.session_id, opened);
+
+            return {
+                session_id: created.session_id,
+                initial_windows:
+                    opened.length === 0
+                        ? null
+                        : opened.map((each) => ({ window_id: each.window_id, block_ids: each.blocks.map((block) => block.block_id), revision: 1 })),
+            };
+        }
+        if (method === "session.new_window") {
+            const asked = payload as {
+                session_id?: string;
+                window_label?: string;
+                layout?: { block?: { label?: string; options?: { cwd?: string } } };
+            };
+            const sessionId = attachedTo(payload);
+            const opened = newWindow(asked.window_label ?? "", [newBlock("com.superlogical.terminal", asked.layout?.block?.label ?? "")]);
+
+            windows.set(sessionId, [...(windows.get(sessionId) ?? []), opened]);
+
+            return { window_id: opened.window_id, block_ids: opened.blocks.map((block) => block.block_id), revision: 1 };
+        }
+        if (method === "session.set_window_label") {
+            const asked = payload as { session_id?: string; window_id?: string; label?: string };
+            const window = (windows.get(attachedTo(payload)) ?? []).find((each) => each.window_id === asked.window_id);
+
+            if (window === undefined) throw new RexCallError("window_not_found", `No window ${asked.window_id}`, 404);
+
+            window.label = asked.label ?? "";
+
+            return {};
+        }
+        if (method === "session.close_window") {
+            const asked = payload as { session_id?: string; window_id?: string };
+            const sessionId = attachedTo(payload);
+            const kept = windows.get(sessionId) ?? [];
+            const window = kept.find((each) => each.window_id === asked.window_id);
+
+            if (window === undefined) throw new RexCallError("window_not_found", `No window ${asked.window_id}`, 404);
+
+            for (const block of window.blocks) closed.add(block.block_id);
+
+            windows.set(
+                sessionId,
+                kept.filter((each) => each !== window),
+            );
+
+            return {};
+        }
+        if (method === "session.view") {
+            const sessionId = attachedTo(payload);
+            const kept = windows.get(sessionId) ?? [];
+            const session = listed().find((each) => each.session_id === sessionId);
+
+            return {
+                session: {
+                    session_id: sessionId,
+                    label: session?.label ?? "",
+                    active_window_id: kept[0]?.window_id ?? "",
+                    windows: kept.map((each) => ({
+                        window_id: each.window_id,
+                        label: each.label,
+                        focused_block_id: each.blocks[0]?.block_id ?? "",
+                        layers: [
+                            {
+                                blocks: each.blocks.map((block) => ({
+                                    block_id: block.block_id,
+                                    creator_name: block.creator_name,
+                                    flavor: `${block.creator_name}.shell`,
+                                    host_id: "host:1",
+                                    label: block.label,
+                                    owner: "me",
+                                })),
+                            },
+                        ],
+                    })),
+                },
+            };
         }
         if (method === "hosts.list") return { hosts: options.hosts ?? [] };
         if (method === "data.connect") return { ticket: Buffer.alloc(16, 9).toString("base64url"), expires_in_ms: 60_000 };
@@ -244,13 +360,13 @@ export function fakeRex(options: FakeRexOptions = {}): FakeRex {
             const sessionId = attachedTo(payload);
             const kept = <T extends { block_id: string }>(blocks: T[]) => blocks.filter((each) => !closed.has(each.block_id));
 
-            if (made.some((each) => each.session_id === sessionId)) {
-                return { blocks: kept([{ block_id: "block:made", creator_name: "com.superlogical.terminal" }]) };
+            if (windows.has(sessionId)) {
+                // The shells that this server made for the session, which the module then adopts.
+                return { blocks: kept((windows.get(sessionId) ?? []).flatMap((each) => each.blocks)) };
             }
 
             return { blocks: kept(options.blocks ?? []) };
         }
-        if (method === "session.new_window") return { window_id: "window:made", block_ids: ["block:made"], revision: 1 };
         if (method === "com.superlogical.terminal.format") return { content: options.screen ?? "" };
         if (method === "com.superlogical.terminal.write") return { bytes_written: String((payload as { args?: { data?: string } }).args?.data ?? "").length };
 
