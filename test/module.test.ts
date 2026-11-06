@@ -624,14 +624,17 @@ test("starts a window for the picker's own row, and says where it is", async () 
 
     server.requests.length = 0;
 
-    const answer = await fake.call<{ host: string; session: string; window: string; label: string }>({
+    const answer = await fake.call<{ host: string; session: string; window: string; block: string; label: string }>({
         method: "POST",
         path: "sessions",
         body: {},
     });
 
-    // The picker's own row is a shell of its own in the session that Pi Pocket keeps.
+    // The picker's own row is a shell of its own in the session that Pi Pocket keeps, and the page opens on the window
+    // that the row made rather than on the one that the conversation already had.
     expect(answer).toMatchObject({ host: server.url, session: "session:1", label: "Pi Pocket" });
+    expect(typeof answer.block).toBe("string");
+    expect(answer.block.startsWith("block:")).toBe(true);
 
     expect(server.requests.find((each) => each.method === "session.new_window")!.payload).toMatchObject({
         session_id: "session:1",

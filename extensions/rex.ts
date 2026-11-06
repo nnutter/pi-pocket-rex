@@ -591,7 +591,7 @@ export default function createRex(_host: Host | null, web: Web) {
         // already there.
         if (!fresh) {
             const own = windows.find((each) => (each.label ?? "").trim() === name);
-            const shell = own === undefined ? undefined : blocksOf(own).find((each) => each.creator_name === TERMINAL_CREATOR)?.block_id;
+            const shell = own === undefined ? undefined : shellIn(own)?.block_id;
 
             if (own !== undefined && typeof shell === "string" && shell !== "") {
                 return { windowId: own.window_id, blockId: shell, windowLabel: name, owned: true };
@@ -607,7 +607,7 @@ export default function createRex(_host: Host | null, web: Web) {
      * The shell that a session already holds in a window, which a person picked on the rail: the module watches it
      * rather than opening one, so the shell is Rex's, and so is the program in it.
      */
-    async function shellAt(client: RexClient, sessionId: string, blockId: string): Promise<Shell> {
+    async function shellAt(client: RexClient, hostKey: string, sessionId: string, blockId: string): Promise<Shell> {
         const windows = (await view(client, sessionId)).windows ?? [];
 
         for (const window of windows) {
@@ -617,7 +617,13 @@ export default function createRex(_host: Host | null, web: Web) {
 
             if (block.creator_name !== TERMINAL_CREATOR) throw web.error(400, "That window holds no terminal.");
 
-            return { windowId: window.window_id, blockId, windowLabel: (window.label ?? "").trim(), owned: false };
+            // A shell that this module made is still its own, so that ending the terminal gives it back as it always has.
+            return {
+                windowId: window.window_id,
+                blockId,
+                windowLabel: (window.label ?? "").trim(),
+                owned: mine(hostKey, sessionId, blockId),
+            };
         }
 
         throw web.error(404, "Rex has no such window.");
@@ -661,6 +667,21 @@ export default function createRex(_host: Host | null, web: Web) {
         return (window.layers ?? []).flatMap((layer) => layer.blocks ?? []);
     }
 
+    /**
+     * The terminal of a window: the one that has the focus, when that one is a terminal, and otherwise the first one.
+     * A window can hold an editor beside a shell, and the shell is what a page can draw.
+     */
+    function shellIn(window: RexWindow): RexBlock | undefined {
+        const shells = blocksOf(window).filter((each) => each.creator_name === TERMINAL_CREATOR);
+
+        return shells.find((each) => each.block_id === window.focused_block_id) ?? shells[0];
+    }
+
+    /** Whether this module made a block: the ledger still says that it holds it, and has not given it back. */
+    function mine(hostKey: string, sessionId: string, blockId: string): boolean {
+        return ledger.get(hostKey)?.get(sessionId)?.has(blockId) === true;
+    }
+
     /** The names that the windows of a session already carry, which a new window's name must not repeat. */
     function takenOf(windows: readonly RexWindow[]): Set<string> {
         return new Set(windows.map((each) => (each.label ?? "").trim()));
@@ -694,17 +715,53 @@ export default function createRex(_host: Host | null, web: Web) {
         try {
             const client = await online(host);
             const sessions = await client.sessions();
+            const windows = await Promise.all(sessions.map((session) => windowsOf(client, host.key, session.session_id)));
 
             return {
                 ...base,
                 online: true,
                 address: client.address,
-                sessions: sessions.map((session) => ({ id: session.session_id, label: session.label ?? session.session_id })),
+                sessions: sessions.map((session, at) => ({
+                    id: session.session_id,
+                    label: session.label ?? session.session_id,
+                    windows: windows[at],
+                })),
             };
         } catch (error) {
             offline(host);
 
             return { ...base, online: false, address: "", error: error instanceof Error ? error.message : String(error), sessions: [] };
+        }
+    }
+
+    /**
+     * The windows of a session, each with the shell that a page can show there: what the picker lists under the session.
+     *
+     * Rex shows a session's windows to a connection that is attached to it, so a look attaches, reads, and steps out
+     * again, unless a terminal of this module is in that session and needs the connection where it is. A session that
+     * Rex will not show is a session with no window: the list is worth more than the one row that failed.
+     */
+    async function windowsOf(
+        client: RexClient,
+        hostKey: string,
+        sessionId: string,
+    ): Promise<Array<{ id: string; label: string; block: string }>> {
+        try {
+            await client.call("session.attach", { session_id: sessionId });
+
+            const windows = (await view(client, sessionId)).windows ?? [];
+
+            const listed = windows.map((window) => ({
+                id: window.window_id,
+                label: (window.label ?? "").trim(),
+                block: shellIn(window)?.block_id ?? "",
+            }));
+
+            if (!held(hostKey, sessionId)) await stepOut(client, sessionId);
+
+            return listed;
+        } catch {
+            return [];
         }
     }
 
@@ -1447,7 +1504,7 @@ export default function createRex(_host: Host | null, web: Web) {
         const windows = (await view(client, sessionId)).windows ?? [];
         const shell = await newShell(client, host.key, sessionId, label === "" ? POCKET_SESSION : label, cwd, takenOf(windows));
 
-        return { host: host.key, session: sessionId, window: shell.windowId, label: shell.windowLabel };
+        return { host: host.key, session: sessionId, window: shell.windowId, block: shell.blockId, label: shell.windowLabel };
     });
 
     web.route("POST", "terminals", async (request) => {
@@ -1476,7 +1533,7 @@ export default function createRex(_host: Host | null, web: Web) {
         await client.call("session.attach", { session_id: sessionId });
 
         const shell = picked
-            ? await shellAt(client, sessionId, pickedBlock)
+            ? await shellAt(client, host.key, sessionId, pickedBlock)
             : await shellFor(request, host, sessionId, conversation, fresh);
 
         // One terminal for each shell: a page that reloads finds the one that it left rather than a second stream.

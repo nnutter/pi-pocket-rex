@@ -525,16 +525,21 @@ export default function setup(pocket) {
         }
     };
 
-    /** What the terminal page adds to its call: the machine, and nothing when none was chosen. */
+    /** What the terminal page adds to its call: the machine and, when a person picked one, the window's shell there. */
     const targetOf = () => {
         const found = chosen();
 
-        return found === null ? {} : { host: found.host };
+        if (found === null) return {};
+
+        return found.block ? { host: found.host, session: found.session, block: found.block } : { host: found.host };
     };
 
-    /** A machine from the picker: it becomes the one that the terminal opens on. */
-    const open = (host) => {
-        globalThis.localStorage?.setItem(CHOSEN, JSON.stringify({ host: host.key }));
+    /** A row of the picker: a machine, or a window in one, which becomes what the terminal shows. */
+    const open = (host, window) => {
+        globalThis.localStorage?.setItem(
+            CHOSEN,
+            JSON.stringify(window === undefined ? { host: host.key } : { host: host.key, session: window.session, block: window.block }),
+        );
 
         if (canPanel && pocket.conversationId() !== null) pocket.openPanel("terminal");
         else pocket.openPage("terminal");

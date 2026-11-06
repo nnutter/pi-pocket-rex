@@ -18,14 +18,14 @@
     "version": "0.1.0",
     "source": {
         "repo": "nnutter/pi-pocket-rex",
-        "commit": "3102af9a773ba5092e2bde365f18212145b4309f",
+        "commit": "3ca4665e500b4219f4b35ea1c42dec0e402cfc62",
         "path": "extensions"
     },
     "files": [
         {
             "name": "rex.ts",
-            "sha256": "76d68dd6a43e16c1c0ac891ca862e05c893e8c6dc9476cc79063d627cc8789c9",
-            "size": 68380
+            "sha256": "2681306da99369d4b76fb634806dea789cb6ba4c387bfe12c945fae0c62522ce",
+            "size": 70808
         },
         {
             "name": "_rex-client.ts",
@@ -34,8 +34,8 @@
         },
         {
             "name": "rex/index.js",
-            "sha256": "59d49c016eaa01d3cfb68cb2b1a24d24975f5dc8c299f5ea74e327a8142eb285",
-            "size": 26712
+            "sha256": "59383c39c1ad94a93019be42c513ebd8ddbeec3da7d0b25f8e9738094f33089a",
+            "size": 26983
         },
         {
             "name": "rex/terminal.js",
@@ -44,13 +44,13 @@
         },
         {
             "name": "rex/picker.js",
-            "sha256": "711e329ed842a5a65ab99b76bb3001aba433bee6be35376b8c98ea438810eb1f",
-            "size": 15579
+            "sha256": "db3c645c9a552f0d64f3146ddec1939957f730ddb2891a6a8a9e5e4612c3c489",
+            "size": 18150
         },
         {
             "name": "rex/terminal.css",
-            "sha256": "15e428415e6621e8e15636a5476fec3f1c480b98d41816480796449e0d9f8fb3",
-            "size": 19164
+            "sha256": "b0c33cad72b5440f0bb15968bb3ae7d7c5e9f1e347a82e45f1946d59f479615c",
+            "size": 20349
         }
     ],
     "pocketApi": 2,

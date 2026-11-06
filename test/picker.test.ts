@@ -13,7 +13,7 @@ interface Host {
     local: boolean;
     online: boolean;
     error?: string;
-    sessions: Array<{ id: string; label: string }>;
+    sessions: Array<{ id: string; label: string; windows?: Array<{ id: string; label: string; block: string }> }>;
 }
 
 const work: Host = {
@@ -24,7 +24,7 @@ const work: Host = {
     local: false,
     online: true,
     sessions: [
-        { id: "session:1", label: "calm-pine" },
+        { id: "session:1", label: "calm-pine", windows: [{ id: "window:1", label: "build", block: "block:1" }] },
         { id: "session:2", label: "quiet-meadow" },
     ],
 };
@@ -78,6 +78,13 @@ describe("the filter", () => {
 
         expect(kept).toHaveLength(1);
         expect(kept[0]!.online).toBe(false);
+    });
+
+    test("keeps the session that holds a window with the text", () => {
+        const kept = filtered(hosts, "build");
+
+        expect(kept).toHaveLength(1);
+        expect(kept[0]!.sessions.map((session: { label: string }) => session.label)).toEqual(["calm-pine"]);
     });
 
     test("keeps nothing when nothing holds the text", () => {
