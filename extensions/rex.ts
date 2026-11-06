@@ -70,8 +70,8 @@ interface Terminal {
     hostLabel: string;
     /** The Rex session and the block inside it. */
     sessionId: string;
-    /** The session's own name, which is what a person calls it in Rex. */
-    sessionLabel: string;
+    /** The name of the window that holds the block, which is what the bar under the terminal shows. */
+    windowLabel: string;
     blockId: string;
     cols: number;
     rows: number;
@@ -620,7 +620,7 @@ export default function createRex(_host: Host | null, web: Web) {
             host: terminal.hostKey,
             hostLabel: terminal.hostLabel,
             session: terminal.sessionId,
-            sessionLabel: terminal.sessionLabel,
+            windowLabel: terminal.windowLabel,
             block: terminal.blockId,
             cols: terminal.cols,
             rows: terminal.rows,
@@ -868,7 +868,7 @@ export default function createRex(_host: Host | null, web: Web) {
             hostKey: host.key,
             hostLabel: host.label,
             sessionId,
-            sessionLabel: named?.label ?? sessionId,
+            windowLabel: named?.label ?? sessionId,
             blockId,
             cols,
             rows,

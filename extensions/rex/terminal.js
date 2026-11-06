@@ -1162,7 +1162,7 @@ export class TerminalView {
                 // Which Rex session this is: the page around the panel says which Pi Pocket session it is, and those
                 // are not the same thing.
                 host: answer.terminal.hostLabel ?? "",
-                session: answer.terminal.sessionLabel ?? "",
+                session: answer.terminal.windowLabel ?? "",
                 cwd: answer.terminal.cwd,
                 alive: answer.terminal.alive,
                 exitCode: answer.terminal.exitCode,
