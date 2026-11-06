@@ -144,6 +144,10 @@ Each block that it opened closes, and a Rex session that is left with no block i
 by itself when its last block leaves, and it keeps an empty session, so without this every conversation would leave one
 behind.
 
+**Archiving a conversation** is the other way that a terminal ends, and it does not wait for a tab to go. The
+conversation's block closes rather than being given back, and the session that it leaves empty goes with it, so an
+archived conversation leaves nothing in Rex to come back to.
+
 A session that still holds a block stays: an editor, or a program that a person started in Rex beside the shell. A
 reload is a goodbye and a hello a moment apart, so the module waits ten seconds before it ends anything.
 
@@ -170,7 +174,8 @@ A person's own Nerd font is one line away — put its name above `"Pocket Mono"`
 - **No mouse, no images.** Keys and text go in; the screen comes out. Kitty graphics and mouse tracking are not wired, so
   clicking a file name in a full-screen program does nothing.
 - **A terminal outlives a panel.** The shell is Rex's, so closing the panel, or restarting the server, leaves it
-  running; closing the last tab of the app is what ends it (see [When the last tab closes](#when-the-last-tab-closes)).
+  running; closing the last tab of the app, or archiving the conversation, is what ends it (see [When the last tab
+  closes](#when-the-last-tab-closes)).
 - **The terminals are the owner's.** A drop-in runs with its owner's rights, and so does anything typed in this page. The
   panel and its routes are for the owner alone; guests and viewers get no route at all.
 

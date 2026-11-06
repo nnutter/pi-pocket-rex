@@ -884,18 +884,23 @@ export default function createRex(_host: Host | null, web: Web) {
     /**
      * Ends the terminals of a session that is archived: an archived session has nowhere to show a terminal, so a shell
      * that nobody can see does not keep running.
+     *
+     * The shell is Rex's, so ending it here closes its block rather than giving the block back, and the session that the
+     * closed blocks leave empty goes with them: an archived conversation is not a place to come back to.
      */
-    function close(conversation: number): void {
-        for (const terminal of [...terminals.values()]) {
-            if (terminal.conversation !== conversation) continue;
+    async function close(conversation: number): Promise<void> {
+        const watched = [...terminals.values()].filter((terminal) => terminal.conversation === conversation);
+        const sessions = sessionsOf(watched);
 
-            end(terminal);
-        }
+        for (const terminal of watched) unwatch(terminal);
+
+        for (const session of sessions) await letGoOf(session);
     }
 
     /**
-     * Ends a terminal, and says that it ended. A person asked for this, or their session went, so the page closes the
-     * panel and says nothing about it. The Rex session keeps running: this module was only watching it.
+     * Ends a terminal, and says that it ended, because a person asked for it: the page closes the panel and says
+     * nothing about it. The block goes back to Rex rather than closing, since a session that a person picked on the
+     * rail is theirs, and its shell keeps running for Rex.app to show.
      */
     function end(terminal: Terminal): void {
         unwatch(terminal);
@@ -1090,13 +1095,13 @@ export default function createRex(_host: Host | null, web: Web) {
     /** Ends the terminals of the sessions that this person sees as archived, for an archive that this module did not hear. */
     function closeArchived(sessions: readonly WebSession[]): void {
         for (const session of sessions) {
-            if (session.archived) close(session.id);
+            if (session.archived) void close(session.id);
         }
     }
 
     // Pi Pocket sends this after the archive is stored. An older server sends none, and the routes' own check covers it.
     const stop = _host?.on?.("session.archived", ({ conversationId, archived }) => {
-        if (archived) close(conversationId);
+        if (archived) void close(conversationId);
     });
 
     if (typeof stop === "function") web.onDispose(stop);

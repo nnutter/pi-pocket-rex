@@ -103,6 +103,17 @@ function methods(server: FakeRex): string[] {
     return server.requests.map((each) => each.method);
 }
 
+/** Waits for a call that the module makes on its own, after the grace that it keeps. */
+async function until(server: FakeRex, method: string, timeoutMs = 15_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+
+    while (!methods(server).includes(method)) {
+        if (Date.now() > deadline) throw new Error(`The module never called ${method}`);
+
+        await Bun.sleep(50);
+    }
+}
+
 test("takes the session's terminal block, and draws its screen", async () => {
     const server = serve();
     const fake = module(server);
@@ -310,6 +321,55 @@ test("ends the terminal of a session that is archived, and only that session's",
     expect(listing.terminals.map((each) => each.id)).toEqual([second.terminal.id]);
 });
 
+test("closes the shell of a session that is archived, and the session that it leaves empty", async () => {
+    const server = serve();
+    // The session is one that this module made, as a run that a crash ended would have written it down.
+    const fake = module(server, { ledger: { [server.url]: ["session:1"] } });
+
+    await open(fake, server);
+
+    server.requests.length = 0;
+
+    fake.emit("session.archived", { conversationId: 7, archived: true });
+
+    await until(server, "session.destroy");
+
+    // The block closes first: a session is empty only after the block that was in it has gone.
+    expect(server.requests.find((each) => each.method === "block.close")).toMatchObject({
+        payload: { session_id: "session:1", block_id: "block:1" },
+    });
+    expect(methods(server).indexOf("block.close")).toBeLessThan(methods(server).indexOf("session.destroy"));
+
+    // An archived conversation leaves no session behind, and nothing for a later look to ask about.
+    expect(server.requests.find((each) => each.method === "session.destroy")).toMatchObject({
+        payload: { session_id: "session:1" },
+    });
+    expect(ledgerOf(fake.state)).toEqual({});
+});
+
+test("keeps a session that another program is still in, when the conversation is archived", async () => {
+    const server = serve({
+        blocks: [
+            { block_id: "block:1", creator_name: "com.superlogical.terminal" },
+            { block_id: "block:9", creator_name: "com.superlogical.editor" },
+        ],
+    });
+    const fake = module(server, { ledger: { [server.url]: ["session:1"] } });
+
+    await open(fake, server);
+
+    server.requests.length = 0;
+
+    fake.emit("session.archived", { conversationId: 7, archived: true });
+
+    await until(server, "session.detach");
+
+    // The shell that the conversation showed closes, and the editor that a person started in Rex stays.
+    expect(methods(server)).toContain("block.close");
+    expect(methods(server)).not.toContain("session.destroy");
+    expect(ledgerOf(fake.state)).toEqual({ [server.url]: ["session:1"] });
+});
+
 test("makes a terminal in the session's folder when the session has none", async () => {
     const server = serve({ blocks: [] });
     const fake = module(server);
@@ -500,17 +560,6 @@ describe("the tabs of the app", () => {
 
     const said = (fake: FakeWeb, path: string, body: Record<string, unknown> = {}) =>
         fake.call({ method: "POST", path, body });
-
-    /** Waits for a call that the module makes on its own, after the grace that it keeps. */
-    async function until(server: FakeRex, method: string, timeoutMs = GRACE + 5_000): Promise<void> {
-        const deadline = Date.now() + timeoutMs;
-
-        while (!methods(server).includes(method)) {
-            if (Date.now() > deadline) throw new Error(`The module never called ${method}`);
-
-            await Bun.sleep(50);
-        }
-    }
 
     test(
         "ends the blocks of the last tab that goes, and the sessions that they leave empty",
