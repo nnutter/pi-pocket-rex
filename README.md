@@ -63,9 +63,8 @@ the way in.
 The panel is the other way in: `Control+Backquote` opens **this conversation's own terminal**, which is a window in the
 Pi Pocket session on this machine, named after the conversation and started in its folder the first time that it is
 asked for. A person who comes back to it — after a reload, or from another tab — finds the same window, because the
-module writes down which window is the conversation's. The folder of the conversation is the check: a shell that runs in
-another folder is not the shell of this conversation, whatever the module wrote down. A conversation that a person
-renamed gives its window the new name, so that Rex shows the name that the person knows.
+module writes down which window is the conversation's. The name of a window is not enough for that: two conversations
+can share a name, such as two worktrees of one branch, and each of them keeps its own shell in its own folder.
 
 ## Choosing another machine or window
 
@@ -163,12 +162,11 @@ reload is a goodbye and a hello a moment apart, so the module waits ten seconds 
 
 A tab that **dies** — a crashed browser, a phone that lost its network, a Pi Pocket that a restart took — says no
 goodbye, and would leave its shells behind for good. So the module writes down the session that it makes, the blocks
-that it opened in it, and the window that each conversation got, with the name and the folder that it carries, in
-`~/.pi-pocket/rex/made.json` (`PI_POCKET_DIR` moves the folder), and a tab that says hello is the moment that it looks
-at them: every block in that file that no terminal holds is closed, and a session in it that no block is left in is
-destroyed. Whether a client has the session open says nothing about a person's work, because Rex.app stays attached to
-every session there is, so an empty one is a leftover. A look waits a minute before the next one, since a reload is a
-hello too.
+that it opened in it, and the window that each conversation got, in `~/.pi-pocket/rex/made.json` (`PI_POCKET_DIR` moves
+the folder), and a tab that says hello is the moment that it looks at them: every block in that file that no terminal
+holds is closed, and a session in it that no block is left in is destroyed. Whether a client has the session open says
+nothing about a person's work, because Rex.app stays attached to every session there is, so an empty one is a leftover.
+A look waits a minute before the next one, since a reload is a hello too.
 
 Nothing outside that file is ever destroyed: a session that Rex.app made, or that a person made with the Rex CLI, is not
 the module's to end, however empty it is. A session that an older Pi Pocket made for a conversation is such a session,
