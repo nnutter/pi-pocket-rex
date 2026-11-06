@@ -40,9 +40,12 @@ dock, and takes a **tile in the places**. `Control+Backquote` opens and closes i
 ## The picker
 
 **Rex sessions**, on the rail, is the tree that Rex's own picker shows: a filter, a heading for each machine with the
-icon that the machine gave itself, and the sessions under it. A tap says which machine to open on: the terminal is
-always this conversation's window in the Pi Pocket session, so the sessions listed under a machine show what Rex holds
-rather than where a tap goes.
+icon that the machine gave itself, the sessions under it, and the windows of each session under those. A tap on a
+session says which machine to open on, and the terminal is this conversation's window in the Pi Pocket session there. A
+tap on a **window** opens the shell that the window already holds, wherever it is: a shell that a person started in Rex,
+or the window of another conversation of Pi Pocket. That shell keeps its own program, and the terminal only watches it.
+A window that holds no terminal, such as one a person split for an editor, stays on the list without a tap, because a
+page cannot draw one.
 
 The machines come from three places, and two entries for one machine are one row:
 
@@ -62,18 +65,21 @@ Pi Pocket session on this machine, named after the conversation and started in i
 asked for. A person who comes back to it — after a reload, or from another tab — finds the same window, because it is
 found by name rather than remembered by a number.
 
-## Choosing another machine
+## Choosing another machine or window
 
 There are two ways to the picker, and either one is two taps:
 
 - the **globe** in the terminal's bar, which puts the terminal away and shows the list;
 - **Rex sessions** on the rail, or in the launcher.
 
-The machine that the terminal is on has a **tick** beside it. Tap a row under another machine and the terminal opens
-this conversation's window there, from then on: `Control+Backquote` returns to it, and the bar says which machine and
-window it is. Tap **This conversation's own terminal**, at the top of the list, to come back to this machine.
+The machine that the terminal is on has a **tick** beside it, and so does the window that it shows. Tap a session under
+another machine and the terminal opens this conversation's window there. Tap a window and the terminal opens the shell
+in that window. From then on `Control+Backquote` returns to the same one, and the bar says which machine and window it
+is. Tap **This conversation's own terminal**, at the top of the list, to come back to this machine.
 
-A shell that was open before keeps running in Rex when another machine is chosen: the terminal only stops watching it.
+A shell that was open before keeps running in Rex when another one is chosen: the terminal only stops watching it. A
+window that the terminal only watches is never closed by Pi Pocket, not when the terminal goes, and not when the
+conversation is archived: that shell belongs to the program that was in it.
 
 ## How it is put together
 
