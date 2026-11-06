@@ -97,6 +97,14 @@ interface Terminal {
     markReady: () => void;
 }
 
+/** A Rex session that this module watched, and the blocks that it opened in it. */
+interface Watched {
+    client: RexClient;
+    hostKey: string;
+    sessionId: string;
+    blocks: string[];
+}
+
 export default function createRex(_host: Host | null, web: Web) {
     const terminals = new Map<string, Terminal>();
 
@@ -967,26 +975,51 @@ export default function createRex(_host: Host | null, web: Web) {
      * end, since that block is a program that a person started in Rex.
      */
     async function letGo(): Promise<void> {
-        // One look at each session, taken before the watch ends: two terminals can share a session, and it is empty
-        // only once both of them have gone.
-        const sessions = new Map<string, Terminal>();
+        // The sessions are taken before the watch ends: two terminals can share a session, and it is empty only once
+        // both of them have gone.
+        const sessions = sessionsOf([...terminals.values()]);
 
-        for (const terminal of [...terminals.values()]) {
+        for (const terminal of [...terminals.values()]) unwatch(terminal);
+
+        for (const session of sessions) await letGoOf(session);
+    }
+
+    /**
+     * The sessions that terminals are in, each with the blocks that this module opened in it, by a machine and a
+     * session.
+     *
+     * A caller closes every block of a session before it asks whether the session is empty: two terminals can share
+     * one, and a look that came between their blocks would find a session that is not empty yet.
+     */
+    function sessionsOf(watched: readonly Terminal[]): Watched[] {
+        const sessions = new Map<string, Watched>();
+
+        for (const terminal of watched) {
             const key = `${terminal.hostKey}\u0000${terminal.sessionId}`;
+            const found = sessions.get(key);
 
-            if (!sessions.has(key)) sessions.set(key, terminal);
-
-            const client = terminal.client;
-            const { sessionId, blockId } = terminal;
-
-            unwatch(terminal);
-
-            await client.call("block.close", { session_id: sessionId, block_id: blockId }).catch(() => {});
+            if (found === undefined) {
+                sessions.set(key, {
+                    client: terminal.client,
+                    hostKey: terminal.hostKey,
+                    sessionId: terminal.sessionId,
+                    blocks: [terminal.blockId],
+                });
+            } else {
+                found.blocks.push(terminal.blockId);
+            }
         }
 
-        for (const terminal of sessions.values()) {
-            if (await destroyIfEmpty(terminal.client, terminal.sessionId)) forget(terminal.hostKey, terminal.sessionId);
+        return [...sessions.values()];
+    }
+
+    /** Closes the blocks that this module opened in a session, and destroys the session that they leave empty. */
+    async function letGoOf(session: Watched): Promise<void> {
+        for (const blockId of session.blocks) {
+            await session.client.call("block.close", { session_id: session.sessionId, block_id: blockId }).catch(() => {});
         }
+
+        if (await destroyIfEmpty(session.client, session.sessionId)) forget(session.hostKey, session.sessionId);
     }
 
     /**
