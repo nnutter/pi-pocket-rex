@@ -253,6 +253,9 @@ export function fakeRex(options: FakeRexOptions = {}): FakeRex {
         if (method === "block.close") {
             const asked = payload as { block_id?: string };
 
+            // Rex only lets a connection that is attached to the session close a block in it.
+            attachedTo(payload);
+
             closed.add(asked.block_id ?? "");
 
             return { block_id: asked.block_id, revision: 1 };

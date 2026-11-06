@@ -213,6 +213,8 @@ export class TerminalView {
     #onClose;
     #keyboardUp;
     #target;
+    /** The way to forget the window that a person picked, for one that Rex no longer holds. */
+    #forgetTarget;
     #state = {};
 
     #screen = null;
@@ -268,7 +270,7 @@ export class TerminalView {
     /** Whether a request of the queue is on its way: only one is, so that the order of what a person did is kept. */
     #sending = false;
 
-    constructor(pocket, { container, onState, onClose, keyboardUp, target }) {
+    constructor(pocket, { container, onState, onClose, keyboardUp, target, forgetTarget }) {
         this.#pocket = pocket;
         this.#container = container;
         this.#onState = onState;
@@ -276,6 +278,8 @@ export class TerminalView {
         this.#keyboardUp = keyboardUp ?? (() => false);
         // The machine that this page shows a terminal on, as the picker chose it; no choice is this machine.
         this.#target = target ?? (() => ({}));
+        // The way to forget that choice, for a shell that Rex no longer holds.
+        this.#forgetTarget = forgetTarget ?? (() => {});
         this.#font = Number(globalThis.localStorage?.getItem("x.rex.font")) || 13;
 
         this.#build();
@@ -1140,14 +1144,22 @@ export class TerminalView {
         );
 
         try {
+            const asked = this.#target();
+
             const answer = await this.#pocket.api("terminals", {
                 // The Rex session that the picker chose, and the Pi Pocket session that this page was opened from.
-                ...this.#target(),
+                ...asked,
                 conversation: this.#pocket.conversationId() ?? undefined,
                 // A new shell is one of its own, even in the same folder.
                 ...(asNew ? { new: true } : {}),
                 ...this.#fit(),
             }, { method: "POST" });
+
+            // The shell that a person picked can be gone, and the module opens the shell of the conversation instead.
+            // The page forgets the choice, so that the next open does not ask for a shell that is not there.
+            if (typeof asked.block === "string" && asked.block !== "" && answer.terminal.block !== asked.block) {
+                this.#forgetTarget();
+            }
 
             // The view went while its shell was starting: the shell is made, and has nowhere to be.
             if (this.#destroyed) {

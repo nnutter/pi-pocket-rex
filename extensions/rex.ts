@@ -1302,6 +1302,14 @@ export default function createRex(_host: Host | null, web: Web) {
                 const client = await online(host);
 
                 for (const [sessionId, blocks] of [...sessions]) {
+                    // A session that a terminal of this module is in is not one to clean up: the blocks in it are
+                    // being watched.
+                    if (held(host.key, sessionId)) continue;
+
+                    // Rex only lets a connection that is attached to a session close a block in it, and answers a
+                    // conflict otherwise. The look attaches first, so that the blocks that a dead tab left can close.
+                    await client.call("session.attach", { session_id: sessionId }).catch(() => {});
+
                     for (const blockId of [...blocks]) {
                         if (holds(host.key, blockId)) continue;
 
@@ -1311,14 +1319,15 @@ export default function createRex(_host: Host | null, web: Web) {
                         changed = true;
                     }
 
-                    if (blocks.size > 0 || held(host.key, sessionId)) continue;
-
-                    if (await destroyIfEmpty(client, sessionId)) {
+                    if (blocks.size === 0 && (await destroyIfEmpty(client, sessionId))) {
                         sessions.delete(sessionId);
                         changed = true;
-                    } else {
-                        await stepOut(client, sessionId);
+
+                        continue;
                     }
+
+                    // A session that this module does not hold is not one that it watches, so the look steps out of it.
+                    await stepOut(client, sessionId);
                 }
             } catch {
                 // A machine that cannot be asked keeps what it has: an empty session in Rex is better than a guess about
@@ -1526,15 +1535,30 @@ export default function createRex(_host: Host | null, web: Web) {
         const picked = pickedSession !== "" && pickedBlock !== "";
         const host = named === "" ? await ownHost() : await hostOf(named);
         const client = await online(host);
-        const sessionId = picked ? pickedSession : await pocketSession(host);
+        let sessionId = picked ? pickedSession : await pocketSession(host);
+        let shell: Shell | undefined;
 
         // A session that this page is not a viewer of will not own a block for it, and a window is no use to a page
         // that cannot see it.
-        await client.call("session.attach", { session_id: sessionId });
+        if (picked) {
+            try {
+                await client.call("session.attach", { session_id: sessionId });
 
-        const shell = picked
-            ? await shellAt(client, host.key, sessionId, pickedBlock)
-            : await shellFor(request, host, sessionId, conversation, fresh);
+                shell = await shellAt(client, host.key, sessionId, pickedBlock);
+            } catch {
+                // The shell that the person picked is gone: the window closed, or the session went with it. The
+                // terminal opens the shell of the conversation instead, and the page forgets the choice.
+                shell = undefined;
+            }
+        }
+
+        if (shell === undefined) {
+            sessionId = await pocketSession(host);
+
+            await client.call("session.attach", { session_id: sessionId });
+
+            shell = await shellFor(request, host, sessionId, conversation, fresh);
+        }
 
         // One terminal for each shell: a page that reloads finds the one that it left rather than a second stream.
         const existing = [...terminals.values()].find((each) => each.alive && each.hostKey === host.key && each.blockId === shell.blockId);

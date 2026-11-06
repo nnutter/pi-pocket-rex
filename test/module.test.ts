@@ -370,6 +370,30 @@ test("ends the terminal of a conversation that is archived, and only that conver
     expect(listing.terminals.map((each) => each.id)).toEqual([second.terminal.id]);
 });
 
+test("opens the shell of the conversation, when the shell that a person picked is gone", async () => {
+    // A person picked a window on the rail, and it closed while the page was away: the window, or the session that
+    // held it. The terminal then opens the shell of the conversation, and says nothing about the window that is gone.
+    const server = serve({ windows: { "session:1": [here()] } });
+    const fake = module(server);
+
+    const answer = await open(fake, server, { session: "session:1", block: "block:gone" });
+
+    expect(answer.terminal).toMatchObject({ session: "session:1", block: "block:1" });
+
+    // And no window is made for the shell that is gone: the conversation's own window is the one that answers.
+    expect(methods(server)).not.toContain("session.new_window");
+});
+
+test("opens the shell of the conversation, when the session that a person picked is gone", async () => {
+    // The session that held the window that the person picked went with it.
+    const server = serve({ windows: { "session:1": [here()] } });
+    const fake = module(server);
+
+    const answer = await open(fake, server, { session: "session:gone", block: "block:2" });
+
+    expect(answer.terminal).toMatchObject({ session: "session:1", block: "block:1" });
+});
+
 test("shows the shell of a window that Rex already holds, without taking it from Rex", async () => {
     const server = serve({ windows: { "session:1": [here(), theirs()] } });
     const fake = module(server);
@@ -839,6 +863,23 @@ describe("the tabs of the app", () => {
         await Bun.sleep(300);
 
         expect(methods(server)).not.toContain("session.destroy");
+        expect(ledgerOf(fake.state)).toEqual({ [server.url]: { "session:1": [] } });
+    }, 30_000);
+
+    test("attaches to the session before it closes a block in it", async () => {
+        const server = serve({ windows: { "session:1": [here(), editor] } });
+        const fake = module(server, { ledger: { [server.url]: { "session:1": ["block:1"] } } });
+
+        await said(fake, "tabs", { tab: "phone" });
+        await until(server, "block.close");
+
+        // Rex refuses to close a block in a session that the connection is not attached to, so the look attaches
+        // first. A block that the look cannot close stays in the ledger, and the shell of a dead tab stays in Rex.
+        const attach = server.requests.findIndex((each) => each.method === "session.attach");
+        const close = server.requests.findIndex((each) => each.method === "block.close");
+
+        expect(attach).toBeGreaterThanOrEqual(0);
+        expect(close).toBeGreaterThan(attach);
         expect(ledgerOf(fake.state)).toEqual({ [server.url]: { "session:1": [] } });
     }, 30_000);
 
