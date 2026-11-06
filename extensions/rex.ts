@@ -14,7 +14,15 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { delimiter, dirname, join } from "node:path";
-import { RexCallError, RexClient, RexStream, RexMessageFilter, type RexView, type RexWindow } from "./_rex-client.ts";
+import {
+    RexCallError,
+    RexClient,
+    RexStream,
+    RexMessageFilter,
+    type RexBlock,
+    type RexView,
+    type RexWindow,
+} from "./_rex-client.ts";
 import type { Host, Web, WebRequest, WebSession } from "./_pocket.d.ts";
 
 /**
@@ -579,9 +587,7 @@ export default function createRex(_host: Host | null, web: Web) {
         // already there.
         if (!fresh) {
             const own = windows.find((each) => (each.label ?? "").trim() === name);
-            const shell = (own?.layers ?? [])
-                .flatMap((layer) => layer.blocks ?? [])
-                .find((each) => each.creator_name === TERMINAL_CREATOR)?.block_id;
+            const shell = own === undefined ? undefined : blocksOf(own).find((each) => each.creator_name === TERMINAL_CREATOR)?.block_id;
 
             if (own !== undefined && typeof shell === "string" && shell !== "") {
                 return { windowId: own.window_id, blockId: shell, windowLabel: name };
@@ -624,6 +630,11 @@ export default function createRex(_host: Host | null, web: Web) {
         rememberBlock(hostKey, sessionId, blockId);
 
         return { windowId: made.window_id, blockId, windowLabel: label };
+    }
+
+    /** The blocks of a window, which Rex keeps in the layers that the window splits into. */
+    function blocksOf(window: RexWindow): RexBlock[] {
+        return (window.layers ?? []).flatMap((layer) => layer.blocks ?? []);
     }
 
     /** The names that the windows of a session already carry, which a new window's name must not repeat. */
