@@ -53,6 +53,8 @@ export interface FakeRexOptions {
     hosts?: FakeHost[];
     /** The blocks that `session.list_blocks` reports, for a session that this server did not make. */
     blocks?: Array<{ block_id: string; creator_name?: string; label?: string }>;
+    /** The windows that a session already holds, by session: what a server looks like after a restart. */
+    windows?: Record<string, FakeWindow[]>;
     /** What `com.superlogical.terminal.format` paints: the screen that a terminal opens on. */
     screen?: string;
     /** Answers one method instead of the defaults, and may throw a `RexCallError` to fail the call. */
@@ -189,7 +191,9 @@ export function fakeRex(options: FakeRexOptions = {}): FakeRex {
     const gone = new Set<string>();
 
     /** The windows of each session that this server made, and the blocks in each of them. */
-    const windows = new Map<string, FakeWindow[]>();
+    const windows = new Map<string, FakeWindow[]>(
+        Object.entries(options.windows ?? {}).map(([sessionId, kept]) => [sessionId, [...kept]] as const),
+    );
     let counted = 0;
 
     /** A new block, with a name that no other block in this server has. */
@@ -326,32 +330,34 @@ export function fakeRex(options: FakeRexOptions = {}): FakeRex {
         }
         if (method === "session.view") {
             const sessionId = attachedTo(payload);
-            const kept = windows.get(sessionId) ?? [];
+            // A block that closed leaves its window, and a window that lost its last block goes, as Rex does it.
+            const kept = (windows.get(sessionId) ?? [])
+                .map((each) => ({ ...each, blocks: each.blocks.filter((block) => !closed.has(block.block_id)) }))
+                .filter((each) => each.blocks.length > 0);
             const session = listed().find((each) => each.session_id === sessionId);
 
             return {
-                session: {
-                    session_id: sessionId,
-                    label: session?.label ?? "",
-                    active_window_id: kept[0]?.window_id ?? "",
-                    windows: kept.map((each) => ({
-                        window_id: each.window_id,
-                        label: each.label,
-                        focused_block_id: each.blocks[0]?.block_id ?? "",
-                        layers: [
-                            {
-                                blocks: each.blocks.map((block) => ({
-                                    block_id: block.block_id,
-                                    creator_name: block.creator_name,
-                                    flavor: `${block.creator_name}.shell`,
-                                    host_id: "host:1",
-                                    label: block.label,
-                                    owner: "me",
-                                })),
-                            },
-                        ],
-                    })),
-                },
+                session_id: sessionId,
+                label: session?.label ?? "",
+                revision: 1,
+                active_window_id: kept[0]?.window_id ?? "",
+                windows: kept.map((each) => ({
+                    window_id: each.window_id,
+                    label: each.label,
+                    focused_block_id: each.blocks[0]?.block_id ?? "",
+                    layers: [
+                        {
+                            blocks: each.blocks.map((block) => ({
+                                block_id: block.block_id,
+                                creator_name: block.creator_name,
+                                flavor: `${block.creator_name}.shell`,
+                                host_id: "host:1",
+                                label: block.label,
+                                owner: "me",
+                            })),
+                        },
+                    ],
+                })),
             };
         }
         if (method === "hosts.list") return { hosts: options.hosts ?? [] };

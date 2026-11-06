@@ -9,11 +9,28 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import createRex, { rexKeyName, rexKeyOf } from "../extensions/rex.ts";
-import { fakeRex, type FakeRex } from "./fake-rex.ts";
+import { fakeRex, type FakeRex, type FakeWindow } from "./fake-rex.ts";
 import { RexCallError } from "../extensions/_rex-client.ts";
 import { fakeWeb, textOf, type FakeWeb, type FrameEvent } from "./fake-web.ts";
 
 const root = join(import.meta.dir, "..");
+
+/** The window that the conversation in these tests has in Pi Pocket's session: what a restart leaves in Rex. */
+function here(): FakeWindow {
+    return {
+        window_id: "window:1",
+        label: "Here",
+        blocks: [{ block_id: "block:1", creator_name: "com.superlogical.terminal", label: "Here" }],
+    };
+}
+
+/** A window that a person opened in Pi Pocket's session, with a block that this module did not make. */
+const editor: FakeWindow = {
+    window_id: "window:9",
+    label: "editor",
+    blocks: [{ block_id: "block:9", creator_name: "com.superlogical.editor", label: "editor" }],
+};
+
 const made: Array<FakeWeb | FakeRex> = [];
 /** The data folders that the modules in this test wrote to, each thrown away with the test that made it. */
 const states: string[] = [];
@@ -29,8 +46,10 @@ afterEach(async () => {
 
 function serve(options: Parameters<typeof fakeRex>[0] = {}): FakeRex {
     const server = fakeRex({
-        sessions: [{ session_id: "session:1", label: "cosmic-brook" }],
-        blocks: [{ block_id: "block:1", creator_name: "com.superlogical.terminal", label: "shell" }],
+        // The session that Pi Pocket keeps on the machine, with the window of the conversation in these tests: the
+        // conversation is number 7, and its title is what the window is called.
+        sessions: [{ session_id: "session:1", label: "Pi Pocket" }],
+        windows: { "session:1": [here()] },
         screen: "seeded\r\n",
         ...options,
     });
@@ -43,7 +62,7 @@ function serve(options: Parameters<typeof fakeRex>[0] = {}): FakeRex {
 function module(
     server: FakeRex,
     options: {
-        sessions?: Array<{ id: number; cwd: string; archived?: boolean }>;
+        sessions?: Array<{ id: number; cwd: string; title?: string; archived?: boolean }>;
         /**
          * What the module made before this run, as a data folder that a restart left it would hold it: the machine, and
          * then the sessions with the blocks in each, or the sessions alone that the first version of the ledger kept.
@@ -67,7 +86,7 @@ function module(
         settings: { local: server.url, runtime: join(root, "src") },
         sessions: (options.sessions ?? [{ id: 7, cwd: root }]).map((each) => ({
             ...each,
-            title: "Here",
+            title: each.title ?? "Here",
             archived: each.archived ?? false,
             updatedAt: 0,
         })),
@@ -118,7 +137,7 @@ async function open(fake: FakeWeb, server: FakeRex, body: Record<string, unknown
     return fake.call<{ terminal: Summary; frame: FrameEvent["frame"] }>({
         method: "POST",
         path: "terminals",
-        body: { host: server.url, session: "session:1", conversation: 7, cols: 40, rows: 6, ...body },
+        body: { host: server.url, conversation: 7, cols: 40, rows: 6, ...body },
     });
 }
 
@@ -317,31 +336,28 @@ test("gives the block back when a person ends the terminal, and leaves the Rex s
     });
 });
 
-test("ends the terminal of a session that is archived, and only that session's", async () => {
-    const server = serve({
-        sessions: [
-            { session_id: "session:1", label: "one" },
-            { session_id: "session:2", label: "two" },
-        ],
-    });
+test("ends the terminal of a conversation that is archived, and only that conversation's", async () => {
+    const server = serve();
     const fake = module(server, {
         sessions: [
             { id: 7, cwd: root },
-            { id: 8, cwd: root },
+            { id: 8, cwd: root, title: "Elsewhere" },
         ],
     });
 
-    const first = await open(fake, server, { session: "session:1", conversation: 7 });
-    const second = await open(fake, server, { session: "session:2", conversation: 8 });
+    const first = await open(fake, server, { conversation: 7 });
+    const second = await open(fake, server, { conversation: 8 });
 
     expect(first.terminal.id).not.toBe(second.terminal.id);
+    // One session, and a window in it for each conversation.
+    expect(second.terminal.session).toBe(first.terminal.session);
 
     fake.sessions[0]!.archived = true;
     fake.emit("session.archived", { conversationId: 7, archived: true });
 
     const listing = await fake.call<{ terminals: Summary[] }>({ method: "GET", path: "terminals" });
 
-    // The archived one is gone, and the one on the session that is still open is there.
+    // The archived one is gone, and the one on the conversation that is still open is there.
     expect(listing.terminals.map((each) => each.id)).toEqual([second.terminal.id]);
 });
 
@@ -371,13 +387,9 @@ test("closes the shell of a session that is archived, and the session that it le
     expect(ledgerOf(fake.state)).toEqual({});
 });
 
-test("keeps a session that another program is still in, when the conversation is archived", async () => {
-    const server = serve({
-        blocks: [
-            { block_id: "block:1", creator_name: "com.superlogical.terminal" },
-            { block_id: "block:9", creator_name: "com.superlogical.editor" },
-        ],
-    });
+test("keeps the session that another program is still in, when the conversation is archived", async () => {
+    // A person put a window of their own in Pi Pocket's session, with a program that is not this module's.
+    const server = serve({ windows: { "session:1": [here(), editor] } });
     const fake = module(server, { ledger: { [server.url]: ["session:1"] } });
 
     await open(fake, server);
@@ -388,27 +400,30 @@ test("keeps a session that another program is still in, when the conversation is
 
     await until(server, "session.detach");
 
-    // The shell that the conversation showed closes, and the editor that a person started in Rex stays.
+    // The shell that the conversation showed closes, and the program that a person started in Rex stays.
     expect(methods(server)).toContain("block.close");
     expect(methods(server)).not.toContain("session.destroy");
     expect(ledgerOf(fake.state)).toEqual({ [server.url]: { "session:1": [] } });
 });
 
-test("makes a terminal in the session's folder when the session has none", async () => {
-    const server = serve({ blocks: [] });
+test("makes a window in the conversation's folder when the session has none for it", async () => {
+    const server = serve({ windows: {} });
     const fake = module(server);
 
     server.requests.length = 0;
 
-    await open(fake, server);
+    const answer = await open(fake, server);
 
     const made = server.requests.find((each) => each.method === "session.new_window");
 
     expect(made).toBeDefined();
+    // The window is named after the conversation, and its shell starts in the conversation's folder.
     expect(made!.payload).toMatchObject({
         session_id: "session:1",
-        layout: { block: { flavor: "com.superlogical.terminal.shell", options: { cwd: root } } },
+        window_label: "Here",
+        layout: { block: { flavor: "com.superlogical.terminal.shell", label: "Here", options: { cwd: root } } },
     });
+    expect(answer.terminal).toMatchObject({ session: "session:1", block: "block:made-1", windowLabel: "Here" });
 });
 
 test("names a key the way that a Rex terminal does", () => {
@@ -438,8 +453,8 @@ test("sends a key with the modifiers in the order that Rex reads them", () => {
     expect(rexKeyOf({ key: "KeyA", utf8: "a" })).toMatchObject({ text: "a" });
 });
 
-test("makes the conversation's own session when the page names none", async () => {
-    const server = serve();
+test("makes the Pi Pocket session when the machine has none", async () => {
+    const server = serve({ sessions: [], windows: {} });
     const fake = module(server);
 
     server.requests.length = 0;
@@ -453,62 +468,81 @@ test("makes the conversation's own session when the page names none", async () =
     const created = server.requests.find((each) => each.method === "session.create");
 
     expect(created).toBeDefined();
-    // The session carries the conversation's name and folder, and its shell starts in that folder.
-    expect(created!.payload).toMatchObject({ label: "Here" });
-    expect(answer.terminal).toMatchObject({ host: server.url, session: server.made[0]!.session_id, block: "block:made-1" });
+    // The session is the one that a person sees as Pi Pocket, and the conversation gets a window in it.
+    expect(created!.payload).toMatchObject({ label: "Pi Pocket" });
+    expect(answer.terminal).toMatchObject({ host: server.url, session: "session:made-1", block: "block:made-1" });
 });
 
-test("comes back to the session that already has the conversation's name", async () => {
-    const server = serve({ sessions: [{ session_id: "session:1", label: "Here" }] });
+test("comes back to the window that already carries the conversation's name", async () => {
+    const server = serve();
     const fake = module(server);
 
     server.requests.length = 0;
 
-    const answer = await fake.call<{ terminal: Summary }>({
-        method: "POST",
-        path: "terminals",
-        body: { conversation: 7, cols: 40, rows: 6 },
-    });
+    const answer = await open(fake, server);
 
-    expect(server.requests.map((each) => each.method)).not.toContain("session.create");
-    expect(answer.terminal.session).toBe("session:1");
+    // The session keeps the shell that it already has, so the page comes back to the one it left.
+    expect(methods(server)).not.toContain("session.create");
+    expect(methods(server)).not.toContain("session.new_window");
+    expect(answer.terminal).toMatchObject({ session: "session:1", block: "block:1", windowLabel: "Here" });
 });
 
-test("starts a session for the picker's own row, and says where it is", async () => {
+test("gives a conversation of another name a window of its own", async () => {
+    const server = serve();
+    const fake = module(server, {
+        sessions: [
+            { id: 7, cwd: root },
+            { id: 8, cwd: root, title: "Elsewhere" },
+        ],
+    });
+
+    await open(fake, server, { conversation: 7 });
+    server.requests.length = 0;
+
+    const answer = await open(fake, server, { conversation: 8 });
+
+    // A window of another name is another conversation's, so this one gets a window that is named after itself.
+    expect(server.requests.find((each) => each.method === "session.new_window")!.payload).toMatchObject({
+        session_id: "session:1",
+        window_label: "Elsewhere",
+    });
+    expect(answer.terminal).toMatchObject({ session: "session:1", block: "block:made-1" });
+});
+
+test("starts a window for the picker's own row, and says where it is", async () => {
     const server = serve();
     const fake = module(server);
 
-    const answer = await fake.call<{ host: string; session: string; label: string }>({
+    server.requests.length = 0;
+
+    const answer = await fake.call<{ host: string; session: string; window: string; label: string }>({
         method: "POST",
         path: "sessions",
         body: {},
     });
 
-    expect(answer).toMatchObject({ host: server.url, session: "session:made-1", label: "made" });
+    // The picker's own row is a shell of its own in the session that Pi Pocket keeps.
+    expect(answer).toMatchObject({ host: server.url, session: "session:1", label: "Pi Pocket" });
 
-    const created = server.requests.find((each) => each.method === "session.create");
-
-    expect(created!.payload).toMatchObject({
-        initial_windows: [
-            {
-                layout: {
-                    block: {
-                        flavor: "com.superlogical.terminal.shell",
-                        // A session that a person starts by hand begins in their home, as Rex's own picker does.
-                        options: { cwd: homedir() },
-                    },
-                },
+    expect(server.requests.find((each) => each.method === "session.new_window")!.payload).toMatchObject({
+        session_id: "session:1",
+        window_label: "Pi Pocket",
+        layout: {
+            block: {
+                flavor: "com.superlogical.terminal.shell",
+                // A shell that a person starts by hand begins in their home, as Rex's own picker does.
+                options: { cwd: homedir() },
             },
-        ],
+        },
     });
 });
 
-test("remembers the sessions that it made, so that a look after a restart can find them", async () => {
-    const server = serve();
+test("remembers the session that it made, with the shells that it opened in it", async () => {
+    // A machine that ran Rex before this module: the session is the module's to make.
+    const server = serve({ sessions: [], windows: {} });
     const fake = module(server);
 
-    // The conversation's own terminal, and the picker's own row: each makes a session, and both are this module's,
-    // with the shell that this module opened in each of them.
+    // The conversation's own shell, and the picker's own row: one session holds both of them.
     const own = await fake.call<{ terminal: Summary }>({
         method: "POST",
         path: "terminals",
@@ -518,9 +552,11 @@ test("remembers the sessions that it made, so that a look after a restart can fi
 
     const held = ledgerOf(fake.state)[server.url] ?? {};
 
-    expect(Object.keys(held).sort()).toEqual([own.terminal.session, picked.session].sort());
-    expect(held[own.terminal.session]).toEqual([own.terminal.block]);
-    expect(held[picked.session]).toHaveLength(1);
+    expect(Object.keys(held)).toEqual([own.terminal.session]);
+    expect(picked.session).toBe(own.terminal.session);
+    // The session holds both shells, so a look after a restart knows both of them.
+    expect(held[own.terminal.session]).toHaveLength(2);
+    expect(held[own.terminal.session]).toContain(own.terminal.block);
 });
 
 test("adds a machine to the list that Rex keeps, so that Rex.app shows it too", async () => {
@@ -551,29 +587,23 @@ test("asks for a machine's name and its address", async () => {
     });
 });
 
-test("starts another shell where this one is when the bar asks for a new one", async () => {
-    const server = serve({ sessions: [{ session_id: "session:1", label: "Here" }] });
+test("starts another window in the same folder when the bar asks for a new shell", async () => {
+    const server = serve();
     const fake = module(server);
 
-    const first = await fake.call<{ terminal: Summary }>({
-        method: "POST",
-        path: "terminals",
-        body: { conversation: 7, cols: 40, rows: 6 },
-    });
-
-    // The conversation's own session is the one that is already named after it.
-    expect(first.terminal.session).toBe("session:1");
+    const first = await open(fake, server);
 
     server.requests.length = 0;
 
-    const second = await fake.call<{ terminal: Summary }>({
-        method: "POST",
-        path: "terminals",
-        body: { conversation: 7, cols: 40, rows: 6, new: true },
-    });
+    const second = await open(fake, server, { new: true });
 
-    expect(server.requests.map((each) => each.method)).toContain("session.create");
-    expect(second.terminal.session).not.toBe(first.terminal.session);
+    // The new shell is a window of its own, and its name leaves the name that a reload comes back to alone.
+    expect(server.requests.find((each) => each.method === "session.new_window")!.payload).toMatchObject({
+        session_id: "session:1",
+        window_label: "Here 2",
+    });
+    expect(second.terminal.session).toBe(first.terminal.session);
+    expect(second.terminal.block).not.toBe(first.terminal.block);
 });
 
 /**
@@ -596,12 +626,7 @@ describe("the tabs of the app", () => {
             // Two machines: one session holds only the block that this module opened, and one holds a block that a
             // person started in Rex beside it.
             const alone = serve();
-            const shared = serve({
-                blocks: [
-                    { block_id: "block:1", creator_name: "com.superlogical.terminal" },
-                    { block_id: "block:9", creator_name: "com.superlogical.editor" },
-                ],
-            });
+            const shared = serve({ windows: { "session:1": [here(), editor] } });
             // Each remembers the session that it watched, as a run that a crash ended would.
             const mine = module(alone, { ledger: { [alone.url]: ["session:1"] } });
             const theirs = module(shared, { ledger: { [shared.url]: ["session:1"] } });
@@ -672,7 +697,7 @@ describe("the tabs of the app", () => {
      * looks for it. The next tab that says hello is that look, and it ends only what this module made.
      */
     test("ends the session that a tab which died left empty, when the next tab says hello", async () => {
-        const server = serve({ blocks: [] });
+        const server = serve({ windows: {} });
         const fake = module(server, { ledger: { [server.url]: ["session:1"] } });
 
         server.requests.length = 0;
@@ -687,12 +712,7 @@ describe("the tabs of the app", () => {
     }, 30_000);
 
     test("closes the block that a tab which died left, and keeps the session that holds another block", async () => {
-        const server = serve({
-            blocks: [
-                { block_id: "block:1", creator_name: "com.superlogical.terminal" },
-                { block_id: "block:9", creator_name: "com.superlogical.editor" },
-            ],
-        });
+        const server = serve({ windows: { "session:1": [here(), editor] } });
         // The shell of a tab that died: the ledger knows the block, and no terminal holds it any more.
         const fake = module(server, { ledger: { [server.url]: { "session:1": ["block:1"] } } });
 
@@ -714,7 +734,7 @@ describe("the tabs of the app", () => {
         const server = serve();
         const fake = module(server, { ledger: { [server.url]: { "session:1": [] } } });
 
-        await open(fake, server, { session: "session:1" });
+        await open(fake, server);
         server.requests.length = 0;
 
         await said(fake, "tabs", { tab: "phone" });

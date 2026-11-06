@@ -14,7 +14,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { delimiter, dirname, join } from "node:path";
-import { RexCallError, RexClient, RexStream, RexMessageFilter } from "./_rex-client.ts";
+import { RexCallError, RexClient, RexStream, RexMessageFilter, type RexWindow } from "./_rex-client.ts";
 import type { Host, Web, WebRequest, WebSession } from "./_pocket.d.ts";
 
 /**
@@ -42,6 +42,14 @@ interface Frame {
 /** The block creator that every shell in Rex belongs to. */
 const TERMINAL_CREATOR = "com.superlogical.terminal";
 
+/**
+ * The name of the one Rex session that this module opens its shells in, on each machine.
+ *
+ * A session's name is how the module finds it again after a restart, and a person sees the same name in Rex: one Pi
+ * Pocket session, with a window for each conversation.
+ */
+const POCKET_SESSION = "Pi Pocket";
+
 /** The most terminals at once. Beyond it, a new one is refused. */
 const MAX_TERMINALS = 8;
 
@@ -68,8 +76,9 @@ interface Terminal {
     /** The Rex server, by the key that its host row uses. */
     hostKey: string;
     hostLabel: string;
-    /** The Rex session and the block inside it. */
+    /** The Rex session, the window in it, and the block in that window. */
     sessionId: string;
+    windowId: string;
     /** The name of the window that holds the block, which is what the bar under the terminal shows. */
     windowLabel: string;
     blockId: string;
@@ -95,6 +104,14 @@ interface Terminal {
     seeded: boolean;
     /** Resolves when the runner says that its screen is up. */
     markReady: () => void;
+}
+
+/** The shell in a window, which is what a terminal watches. */
+interface Shell {
+    windowId: string;
+    blockId: string;
+    /** The window's label, which is the conversation's name. */
+    windowLabel: string;
 }
 
 /** A Rex session that this module watched, and the blocks that it opened in it. */
@@ -505,60 +522,123 @@ export default function createRex(_host: Host | null, web: Web) {
     }
 
     /**
-     * The session that belongs to one conversation: the one that is named after it, or a new one in the conversation's
-     * folder.
+     * The one session that holds this module's terminals on a machine: the one that the person sees as Pi Pocket, made
+     * the first time that a terminal is asked for.
      *
-     * A session is found by its label rather than remembered, so that a person who restarts Pi Pocket, or opens the
-     * terminal from another tab, comes back to the terminal that they left instead of a second one. The label is the
-     * conversation's title, which is the name that the session has in Rex too.
+     * A session is found by its label rather than remembered in memory, so that a person who restarts Pi Pocket, or
+     * opens a terminal from another tab, comes back to the session that they left instead of a second one.
      */
-    async function ownSession(
-        host: RexHost,
-        conversation: number,
-        sessions: readonly WebSession[],
-        cols: number,
-        rows: number,
-        fresh = false,
-    ): Promise<string> {
+    async function pocketSession(host: RexHost): Promise<string> {
         const client = await online(host);
-        // A shell that a person asks for by name -- the bar's New shell -- is a session of its own, whatever the
-        // conversation is called.
-        const label = fresh ? "" : (sessions.find((each) => each.id === conversation)?.title ?? "").trim();
+        const found = (await client.sessions()).find((each) => (each.label ?? "").trim() === POCKET_SESSION);
 
-        if (label !== "") {
-            const found = (await client.sessions()).find((each) => (each.label ?? "").trim() === label);
+        if (found !== undefined) return found.session_id;
 
-            if (found !== undefined) return found.session_id;
-        }
-
-        const cwd = sessions.find((each) => each.id === conversation)?.cwd ?? homedir();
-        const made = await client.call<{
-            session_id?: string;
-            initial_windows?: Array<{ block_ids?: string[] | null }> | null;
-        }>("session.create", {
-            ...(label === "" ? {} : { label }),
-            initial_windows: [
-                {
-                    layout: {
-                        block: {
-                            flavor: `${TERMINAL_CREATOR}.shell`,
-                            options: { cwd },
-                            size: { columns: cols, rows },
-                        },
-                    },
-                },
-            ],
-        });
+        const made = await client.call<{ session_id?: string }>("session.create", { label: POCKET_SESSION });
 
         if (typeof made.session_id !== "string" || made.session_id === "") {
-            throw web.error(502, "Rex made no session for this conversation.");
+            throw web.error(502, "Rex made no session for this machine.");
         }
 
         remember(host.key, made.session_id);
 
-        for (const blockId of made.initial_windows?.[0]?.block_ids ?? []) rememberBlock(host.key, made.session_id, blockId);
-
         return made.session_id;
+    }
+
+    /**
+     * A shell for one conversation, in the Pi Pocket session: the shell of the conversation's own window, or a new
+     * window for it.
+     *
+     * A window is found by its label rather than remembered, so that a person who reloads the page, or opens the
+     * terminal from another tab, comes back to the shell that they left. The label is the conversation's title, which
+     * is what the person calls the conversation in Pi Pocket, and what the bar under the terminal shows.
+     */
+    async function shellFor(
+        request: WebRequest,
+        host: RexHost,
+        sessionId: string,
+        conversation: number,
+        fresh: boolean,
+    ): Promise<Shell> {
+        const client = await online(host);
+        const windows = (await client.view(sessionId)).windows ?? [];
+        const name = windowName(request.sessions(), conversation);
+
+        // The bar's New shell asks for another shell in the same folder, so it never comes back to the one that is
+        // already there.
+        if (!fresh) {
+            const own = windows.find((each) => (each.label ?? "").trim() === name);
+            const shell = (own?.layers ?? [])
+                .flatMap((layer) => layer.blocks ?? [])
+                .find((each) => each.creator_name === TERMINAL_CREATOR)?.block_id;
+
+            if (own !== undefined && typeof shell === "string" && shell !== "") {
+                return { windowId: own.window_id, blockId: shell, windowLabel: name };
+            }
+        }
+
+        const folder = request.sessions().find((each) => each.id === conversation);
+
+        return await newShell(client, host.key, sessionId, name, folder?.cwd ?? homedir(), takenOf(windows));
+    }
+
+    /**
+     * A new window in the Pi Pocket session, with one shell in it, named after the conversation that asked for it.
+     *
+     * The window carries the conversation's name, so that a person looking at Rex sees which conversation each window
+     * is for, and so that the module finds that window again by the same name. The block carries the same name: Rex
+     * shows both, and a person reads them as one thing.
+     */
+    async function newShell(
+        client: RexClient,
+        hostKey: string,
+        sessionId: string,
+        name: string,
+        cwd: string,
+        taken: ReadonlySet<string>,
+    ): Promise<Shell> {
+        const label = freeName(taken, name);
+        const made = await client.call<{ window_id?: string | null; block_ids?: string[] | null }>("session.new_window", {
+            session_id: sessionId,
+            window_label: label,
+            layout: { block: { flavor: `${TERMINAL_CREATOR}.shell`, label, options: { cwd } } },
+        });
+
+        const blockId = made.block_ids?.[0] ?? "";
+
+        if (typeof made.window_id !== "string" || made.window_id === "" || blockId === "") {
+            throw web.error(502, "Rex made no terminal for that conversation.");
+        }
+
+        rememberBlock(hostKey, sessionId, blockId);
+
+        return { windowId: made.window_id, blockId, windowLabel: label };
+    }
+
+    /** The names that the windows of a session already carry, which a new window's name must not repeat. */
+    function takenOf(windows: readonly RexWindow[]): Set<string> {
+        return new Set(windows.map((each) => (each.label ?? "").trim()));
+    }
+
+    /** The name of a conversation's window in Rex: the conversation's title, which is what a person calls it there. */
+    function windowName(sessions: readonly WebSession[], conversation: number): string {
+        return (sessions.find((each) => each.id === conversation)?.title ?? "").trim() || POCKET_SESSION;
+    }
+
+    /**
+     * A name that no window of the session carries yet: the name itself, or the number after it that is free.
+     *
+     * A person can ask for a second shell in one conversation, and two windows of one name would make the window that
+     * a reload comes back to a guess.
+     */
+    function freeName(taken: ReadonlySet<string>, name: string): string {
+        if (!taken.has(name)) return name;
+
+        for (let count = 2; ; count += 1) {
+            const candidate = `${name} ${count}`;
+
+            if (!taken.has(candidate)) return candidate;
+        }
     }
 
     /** One host, and the sessions that it holds, or why it could not be asked. */
@@ -813,46 +893,20 @@ export default function createRex(_host: Host | null, web: Web) {
     }
 
     /**
-     * Opens a terminal: attach to the Rex session, take its terminal block, own it so that the size is this page's, and
-     * start the stream and the screen together.
+     * Opens a terminal: own the shell in its window, so that the size is this page's, and start the stream and the
+     * screen together.
      */
     async function start(
         request: WebRequest,
         host: RexHost,
         sessionId: string,
+        shell: Shell,
         conversation: number,
         cols: number,
         rows: number,
     ): Promise<Terminal> {
         const client = await online(host);
-
-        await client.call("session.attach", { session_id: sessionId });
-
-        const listing = await client.call<{ blocks?: Array<{ block_id: string; creator_name?: string }> | null }>(
-            "session.list_blocks",
-            { session_id: sessionId },
-        );
-
-        let blockId = (listing.blocks ?? []).find((each) => each.creator_name === TERMINAL_CREATOR)?.block_id ?? "";
-
-        if (blockId === "") {
-            // A session with no terminal is a session that has nothing to show, so it gets one in the folder of the
-            // conversation that asked for it.
-            const session = request.sessions().find((each) => each.id === conversation);
-            const made = await client.call<{ block_ids?: string[] | null }>("session.new_window", {
-                session_id: sessionId,
-                layout: { block: { flavor: `${TERMINAL_CREATOR}.shell`, options: { cwd: session?.cwd ?? homedir() } } },
-            });
-
-            blockId = made.block_ids?.[0] ?? "";
-
-            if (blockId !== "") rememberBlock(host.key, sessionId, blockId);
-        }
-
-        if (blockId === "") throw web.error(502, "Rex made no terminal for that session.");
-
-        // The session's own name, for the bar: a person looking at a terminal should see which one it is.
-        const named = (await client.sessions()).find((each) => each.session_id === sessionId);
+        const blockId = shell.blockId;
 
         // The owner's size is the terminal's size, and its colors are the terminal's colors.
         await client.call("session.own_block", { session_id: sessionId, block_ids: [blockId], mode: "request" });
@@ -868,7 +922,8 @@ export default function createRex(_host: Host | null, web: Web) {
             hostKey: host.key,
             hostLabel: host.label,
             sessionId,
-            windowLabel: named?.label ?? sessionId,
+            windowId: shell.windowId,
+            windowLabel: shell.windowLabel,
             blockId,
             cols,
             rows,
@@ -1299,7 +1354,7 @@ export default function createRex(_host: Host | null, web: Web) {
         return { ok: true, label, endpoint };
     });
 
-    // A new session on a machine, with a shell in it: the row that Rex's own picker has at the bottom.
+    // A shell in the one session, on the machine that the page named: the row that Rex's own picker has at the bottom.
     web.route("POST", "sessions", async (request) => {
         const named = String(request.body.host ?? "");
         const host = named === "" ? await ownHost() : await hostOf(named);
@@ -1307,25 +1362,15 @@ export default function createRex(_host: Host | null, web: Web) {
         const cwd = String(request.body.cwd ?? "") || homedir();
 
         const client = await online(host);
-        const made = await client.call<{
-            session_id?: string;
-            initial_windows?: Array<{ block_ids?: string[] | null }> | null;
-        }>("session.create", {
-            ...(label === "" ? {} : { label }),
-            initial_windows: [{ layout: { block: { flavor: `${TERMINAL_CREATOR}.shell`, options: { cwd } } } }],
-        });
+        const sessionId = await pocketSession(host);
 
-        if (typeof made.session_id !== "string" || made.session_id === "") {
-            throw web.error(502, "Rex made no session.");
-        }
+        // A session that this page is not a viewer of will not own a block for it.
+        await client.call("session.attach", { session_id: sessionId });
 
-        remember(host.key, made.session_id);
+        const windows = (await client.view(sessionId)).windows ?? [];
+        const shell = await newShell(client, host.key, sessionId, label === "" ? POCKET_SESSION : label, cwd, takenOf(windows));
 
-        for (const blockId of made.initial_windows?.[0]?.block_ids ?? []) rememberBlock(host.key, made.session_id, blockId);
-
-        const made_ = (await client.sessions()).find((each) => each.session_id === made.session_id);
-
-        return { host: host.key, session: made.session_id, label: made_?.label ?? made.session_id };
+        return { host: host.key, session: sessionId, window: shell.windowId, label: shell.windowLabel };
     });
 
     web.route("POST", "terminals", async (request) => {
@@ -1335,19 +1380,22 @@ export default function createRex(_host: Host | null, web: Web) {
         const rows = size(request.body.rows, 5, 200, 24);
         const conversation = Number(request.body.conversation) || 0;
 
-        // A page that names a session shows that one. A page that names none is this conversation's own terminal, which
-        // is a session of the person's on this machine, made for the conversation the first time that it is asked for.
-        const named = String(request.body.host ?? "") !== "" && String(request.body.session ?? "") !== "";
+        // A page that names a machine shows a shell on that one, which is what a person picked. A page that names none
+        // is this conversation's own terminal, which runs where Pi Pocket runs.
+        const named = String(request.body.host ?? "");
         // The bar's New shell: another shell where this one is, rather than the one that is already there.
         const fresh = request.body.new === true;
-        const host = named ? await hostOf(String(request.body.host)) : await ownHost();
-        const sessionId =
-            named && !fresh ? String(request.body.session) : await ownSession(host, conversation, request.sessions(), cols, rows, fresh);
+        const host = named === "" ? await ownHost() : await hostOf(named);
+        const sessionId = await pocketSession(host);
 
-        // One terminal for each block: a page that reloads finds the one that it left rather than a second stream.
-        const existing = [...terminals.values()].find(
-            (each) => each.alive && each.hostKey === host.key && each.sessionId === sessionId,
-        );
+        // A session that this page is not a viewer of will not own a block for it, and a window is no use to a page
+        // that cannot see it.
+        await (await online(host)).call("session.attach", { session_id: sessionId });
+
+        const shell = await shellFor(request, host, sessionId, conversation, fresh);
+
+        // One terminal for each shell: a page that reloads finds the one that it left rather than a second stream.
+        const existing = [...terminals.values()].find((each) => each.alive && each.hostKey === host.key && each.blockId === shell.blockId);
 
         if (existing !== undefined) {
             if (existing.cols !== cols || existing.rows !== rows) {
@@ -1370,7 +1418,7 @@ export default function createRex(_host: Host | null, web: Web) {
             throw web.error(429, `That is ${MAX_TERMINALS} terminals at once. End one first.`);
         }
 
-        const terminal = await start(request, host, sessionId, conversation, cols, rows);
+        const terminal = await start(request, host, sessionId, shell, conversation, cols, rows);
 
         const timer = setTimeout(() => {
             if (!terminal.alive) terminals.delete(terminal.id);
