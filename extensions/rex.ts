@@ -14,7 +14,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { delimiter, dirname, join } from "node:path";
-import { RexCallError, RexClient, RexStream, RexMessageFilter, type RexWindow } from "./_rex-client.ts";
+import { RexCallError, RexClient, RexStream, RexMessageFilter, type RexView, type RexWindow } from "./_rex-client.ts";
 import type { Host, Web, WebRequest, WebSession } from "./_pocket.d.ts";
 
 /**
@@ -417,6 +417,17 @@ export default function createRex(_host: Host | null, web: Web) {
         return client;
     }
 
+    /**
+     * A session's windows and the blocks in each of them.
+     *
+     * The connection is asked directly rather than through a method of its own, because Pi Pocket loads a drop-in
+     * once and gives only that file a new address when it changes: an import beside it keeps whatever the first load
+     * returned, so a method that this module's client gained after the server started would not be there to call.
+     */
+    async function view(client: RexClient, sessionId: string): Promise<RexView> {
+        return await client.call<RexView>("session.view", { session_id: sessionId });
+    }
+
     /** The host's connection, opened if it is not open. Two calls that arrive together share one connection. */
     async function online(host: RexHost): Promise<RexClient> {
         const client = rexFor(host);
@@ -561,7 +572,7 @@ export default function createRex(_host: Host | null, web: Web) {
         fresh: boolean,
     ): Promise<Shell> {
         const client = await online(host);
-        const windows = (await client.view(sessionId)).windows ?? [];
+        const windows = (await view(client, sessionId)).windows ?? [];
         const name = windowName(request.sessions(), conversation);
 
         // The bar's New shell asks for another shell in the same folder, so it never comes back to the one that is
@@ -1384,7 +1395,7 @@ export default function createRex(_host: Host | null, web: Web) {
         // A session that this page is not a viewer of will not own a block for it.
         await client.call("session.attach", { session_id: sessionId });
 
-        const windows = (await client.view(sessionId)).windows ?? [];
+        const windows = (await view(client, sessionId)).windows ?? [];
         const shell = await newShell(client, host.key, sessionId, label === "" ? POCKET_SESSION : label, cwd, takenOf(windows));
 
         return { host: host.key, session: sessionId, window: shell.windowId, label: shell.windowLabel };

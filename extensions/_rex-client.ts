@@ -371,11 +371,6 @@ export class RexClient {
         return result?.sessions ?? [];
     }
 
-    /** The session's windows and the blocks in them, in one snapshot. */
-    async view(sessionId: string): Promise<RexView> {
-        return await this.call<RexView>("session.view", { session_id: sessionId });
-    }
-
     /** The other servers that this one knows about, which is what its client shows above its sessions. */
     async hosts(): Promise<RexHostEntry[]> {
         const result = await this.call<{ hosts?: RexHostEntry[] | null }>("hosts.list");
