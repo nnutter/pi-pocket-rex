@@ -10,6 +10,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import createRex, { rexKeyName, rexKeyOf } from "../extensions/rex.ts";
 import { fakeRex, type FakeRex } from "./fake-rex.ts";
+import { RexCallError } from "../extensions/_rex-client.ts";
 import { fakeWeb, textOf, type FakeWeb, type FrameEvent } from "./fake-web.ts";
 
 const root = join(import.meta.dir, "..");
@@ -43,8 +44,11 @@ function module(
     server: FakeRex,
     options: {
         sessions?: Array<{ id: number; cwd: string; archived?: boolean }>;
-        /** The sessions that the module made before this run, as a data folder that a restart left it would hold them. */
-        ledger?: Record<string, string[]>;
+        /**
+         * What the module made before this run, as a data folder that a restart left it would hold it: the machine, and
+         * then the sessions with the blocks in each, or the sessions alone that the first version of the ledger kept.
+         */
+        ledger?: Record<string, string[] | Record<string, string[]>>;
     } = {},
 ): FakeWeb & { state: string } {
     // A module remembers what it made in Pi Pocket's data folder, so each one here gets its own: no test reads
@@ -680,6 +684,63 @@ describe("the tabs of the app", () => {
             payload: { session_id: "session:1" },
         });
         expect(ledgerOf(fake.state)).toEqual({});
+    }, 30_000);
+
+    test("closes the block that a tab which died left, and keeps the session that holds another block", async () => {
+        const server = serve({
+            blocks: [
+                { block_id: "block:1", creator_name: "com.superlogical.terminal" },
+                { block_id: "block:9", creator_name: "com.superlogical.editor" },
+            ],
+        });
+        // The shell of a tab that died: the ledger knows the block, and no terminal holds it any more.
+        const fake = module(server, { ledger: { [server.url]: { "session:1": ["block:1"] } } });
+
+        await said(fake, "tabs", { tab: "phone" });
+        await until(server, "block.close");
+
+        expect(server.requests.find((each) => each.method === "block.close")).toMatchObject({
+            payload: { session_id: "session:1", block_id: "block:1" },
+        });
+
+        // The editor that a person started is not this module's to close, and it keeps the session.
+        await Bun.sleep(300);
+
+        expect(methods(server)).not.toContain("session.destroy");
+        expect(ledgerOf(fake.state)).toEqual({ [server.url]: { "session:1": [] } });
+    }, 30_000);
+
+    test("keeps the block that a terminal of this module holds", async () => {
+        const server = serve();
+        const fake = module(server, { ledger: { [server.url]: { "session:1": [] } } });
+
+        await open(fake, server, { session: "session:1" });
+        server.requests.length = 0;
+
+        await said(fake, "tabs", { tab: "phone" });
+        await Bun.sleep(300);
+
+        // The tab that is here is watching that block, so the look after the ledger leaves it alone.
+        expect(methods(server)).not.toContain("block.close");
+    }, 30_000);
+
+    test("keeps a block that Rex would not close, so that a later look can try again", async () => {
+        const server = serve({
+            blocks: [{ block_id: "block:1", creator_name: "com.superlogical.terminal" }],
+            answer: (method) => {
+                if (method === "block.close") throw new RexCallError("conflict", "The block is busy", 409);
+
+                return undefined;
+            },
+        });
+        const fake = module(server, { ledger: { [server.url]: { "session:1": ["block:1"] } } });
+
+        await said(fake, "tabs", { tab: "phone" });
+        await until(server, "block.close");
+        await Bun.sleep(300);
+
+        // A block that stays open stays in the ledger: the next look after the restart knows where to start.
+        expect(ledgerOf(fake.state)).toEqual({ [server.url]: { "session:1": ["block:1"] } });
     }, 30_000);
 
     test("leaves a session that still holds a block", async () => {

@@ -1095,12 +1095,13 @@ export default function createRex(_host: Host | null, web: Web) {
     }
 
     /**
-     * Ends what a tab that died left in Rex: the sessions that this module made and that hold no block any more.
+     * Ends what a tab that died left in Rex: the blocks that this module opened and that no terminal holds any more,
+     * and then the sessions that those blocks leave empty.
      *
      * A tab that goes says goodbye, and letGo ends what it was watching. A tab that dies says nothing, so the module
-     * finds its own sessions again the next time that one says hello, and closes the ones that are empty by then. What
-     * it leaves alone is a session that still holds a block, and a session that this module holds a terminal of: a
-     * session is empty only once the block that the module opened has closed.
+     * finds its own blocks again the next time that one says hello, and closes the ones that no terminal holds. What it
+     * leaves alone is a block that another program opened, and a session that still holds a block: a session is empty
+     * only once every block in it has closed.
      */
     async function sweep(): Promise<void> {
         let changed = false;
@@ -1113,11 +1114,20 @@ export default function createRex(_host: Host | null, web: Web) {
             try {
                 const client = await online(host);
 
-                for (const id of [...sessions.keys()]) {
-                    if (held(host.key, id)) continue;
+                for (const [sessionId, blocks] of [...sessions]) {
+                    for (const blockId of [...blocks]) {
+                        if (holds(host.key, blockId)) continue;
 
-                    if (await destroyIfEmpty(client, id)) {
-                        sessions.delete(id);
+                        if (!(await closeForGood(client, sessionId, blockId))) continue;
+
+                        blocks.delete(blockId);
+                        changed = true;
+                    }
+
+                    if (blocks.size > 0 || held(host.key, sessionId)) continue;
+
+                    if (await destroyIfEmpty(client, sessionId)) {
+                        sessions.delete(sessionId);
                         changed = true;
                     }
                 }
@@ -1128,6 +1138,32 @@ export default function createRex(_host: Host | null, web: Web) {
         }
 
         if (changed) saveLedger();
+    }
+
+    /**
+     * Closes a block that this module opened, and says whether there is nothing left to try: it closed, or Rex no
+     * longer has it. A block that would not close stays in the ledger, for a later look to try again.
+     */
+    async function closeForGood(client: RexClient, sessionId: string, blockId: string): Promise<boolean> {
+        try {
+            await client.call("block.close", { session_id: sessionId, block_id: blockId });
+
+            return true;
+        } catch (error) {
+            return (
+                error instanceof RexCallError &&
+                (error.code === "not_found" || error.code === "block_not_found" || error.code === "session_not_found")
+            );
+        }
+    }
+
+    /** Whether this module holds a terminal of the block, whether that terminal is still running or not. */
+    function holds(hostKey: string, blockId: string): boolean {
+        for (const terminal of terminals.values()) {
+            if (terminal.hostKey === hostKey && terminal.blockId === blockId) return true;
+        }
+
+        return false;
     }
 
     /** Whether this module holds a terminal of the session, whether that terminal is still running or not. */
