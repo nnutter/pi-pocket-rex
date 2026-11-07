@@ -1649,6 +1649,11 @@ export default function createRex(_host: Host | null, web: Web) {
                     for (const blockId of [...blocks]) {
                         if (holds(host.key, blockId)) continue;
 
+                        // A shell that a conversation owns is not an orphan: the person comes back to it, and the
+                        // module finds it again by the window that the ledger holds for that conversation. This is
+                        // what keeps a shell alive across a restart of Pi Pocket.
+                        if (claimed(host.key, blockId)) continue;
+
                         if (!(await closeForGood(client, sessionId, blockId))) continue;
 
                         blocks.delete(blockId);
@@ -1700,6 +1705,15 @@ export default function createRex(_host: Host | null, web: Web) {
     function holds(hostKey: string, blockId: string): boolean {
         for (const terminal of terminals.values()) {
             if (terminal.hostKey === hostKey && terminal.blockId === blockId) return true;
+        }
+
+        return false;
+    }
+
+    /** Whether a conversation owns the block: the shell of a window that the ledger holds for one. */
+    function claimed(hostKey: string, blockId: string): boolean {
+        for (const found of ledger.get(hostKey)?.conversations.values() ?? []) {
+            if (found.block === blockId) return true;
         }
 
         return false;

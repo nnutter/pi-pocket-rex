@@ -1184,6 +1184,20 @@ describe("the tabs of the app", () => {
         expect(ledgerOf(fake.state)).toEqual({ [server.url]: { "session:1": [] } });
     }, 30_000);
 
+    test("keeps the shell of a conversation that a tab died with, so that the person comes back to it", async () => {
+        // The shell of a conversation that a tab was watching: the ledger holds the window of the conversation, and
+        // the person comes back to that shell rather than to a new one.
+        const server = serve();
+        const fake = module(server, { ledger: ledgerFor(server) });
+
+        await said(fake, "tabs", { tab: "phone" });
+        await Bun.sleep(300);
+
+        // The shell of a conversation is not an orphan, so the look leaves it alone.
+        expect(methods(server)).not.toContain("block.close");
+        expect(ledgerOf(fake.state)[server.url]?.["session:1"]).toEqual(["block:1"]);
+    }, 30_000);
+
     test("keeps the block that a terminal of this module holds", async () => {
         const server = serve();
         const fake = module(server, { ledger: sessionLedger(server) });

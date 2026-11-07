@@ -169,13 +169,17 @@ conversations stay as they are. The session goes only if that was its last windo
 A session that still holds a block stays: an editor, or a program that a person started in Rex beside the shell. A
 reload is a goodbye and a hello a moment apart, so the module waits ten seconds before it ends anything.
 
-A tab that **dies** — a crashed browser, a phone that lost its network, a Pi Pocket that a restart took — says no
-goodbye, and would leave its shells behind for good. So the module writes down the session that it makes, the blocks
-that it opened in it, and the window that each conversation got, in `~/.pi-pocket/rex/made.json` (`PI_POCKET_DIR` moves
-the folder), and a tab that says hello is the moment that it looks at them: every block in that file that no terminal
-holds is closed, and a session in it that no block is left in is destroyed. Whether a client has the session open says
-nothing about a person's work, because Rex.app stays attached to every session there is, so an empty one is a leftover.
-A look waits a minute before the next one, since a reload is a hello too.
+A tab that **dies** — a crashed browser, a phone that lost its network — says no goodbye, and would leave its shells
+behind for good. So the module writes down the session that it makes, the blocks that it opened in it, and the window
+that each conversation got, with the name and the folder that it carries, in `~/.pi-pocket/rex/made.json`
+(`PI_POCKET_DIR` moves the folder), and a tab that says hello is the moment that it looks at them: a block that no
+conversation owns is closed, and a session in it that no block is left in is destroyed. Whether a client has the session
+open says nothing about a person's work, because Rex.app stays attached to every session there is, so an empty one is a
+leftover. A look waits a minute before the next one, since a reload is a hello too.
+
+A shell that a conversation owns is not one of those. It keeps running, and the person comes back to it: the next
+terminal of that conversation opens the shell that was there, with the program that was in it still running. A restart of
+Pi Pocket, or of this extension, loses nothing that a conversation owns.
 
 Nothing outside that file is ever destroyed: a session that Rex.app made, or that a person made with the Rex CLI, is not
 the module's to end, however empty it is. A session that an older Pi Pocket made for a conversation is such a session,
