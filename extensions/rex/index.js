@@ -195,7 +195,7 @@ function useKeyboardRoom(pocket, root, up) {
     }, [up]);
 }
 
-function TerminalPage({ pocket, close, setOpen, surface, onSwitch, target, onChoose }) {
+function TerminalPage({ pocket, close, setOpen, surface, onSwitch, target, onChoose, forgetTarget }) {
     const { html, useEffect, useRef, useState } = pocket;
 
     const [state, setState] = useState({});
@@ -235,6 +235,7 @@ function TerminalPage({ pocket, close, setOpen, surface, onSwitch, target, onCho
             onClose: () => closeNow.current(),
             keyboardUp: () => keyboardRef.current,
             target: () => target(),
+            forgetTarget: () => forgetTarget(),
         });
 
         made.current = view;
@@ -553,6 +554,11 @@ export default function setup(pocket) {
         else pocket.openPage("terminal");
     };
 
+    /** Forgets the window that a person picked, when Rex no longer holds it. */
+    const forgetChosen = () => {
+        globalThis.localStorage?.removeItem(CHOSEN);
+    };
+
     /** The picker, from the terminal's own bar: choosing another machine should not mean leaving the terminal first. */
     const chooseSession = () => pocket.openPage("sessions");
 
@@ -566,6 +572,7 @@ export default function setup(pocket) {
             onSwitch=${switchSurface}
             target=${targetOf}
             onChoose=${chooseSession}
+            forgetTarget=${forgetChosen}
         />`;
     const AsPanel = ({ close }) => html`<${Terminal} close=${close} surface="panel" />`;
     const AsPage = ({ close }) => html`<${Terminal} close=${close} surface="page" />`;

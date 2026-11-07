@@ -3,18 +3,24 @@
  * name, each with the sessions under it, and a word for the one that will not answer.
  */
 import { afterEach, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import createRex from "../extensions/rex.ts";
 import { fakeRex, type FakeRex } from "./fake-rex.ts";
 import { fakeWeb, type FakeWeb } from "./fake-web.ts";
 
 const made: Array<FakeWeb | FakeRex> = [];
+/** The data folders that the modules in this test wrote to, each thrown away with the test that made it. */
+const states: string[] = [];
 
 afterEach(async () => {
     for (const each of made.splice(0)) {
         if ("dispose" in each) await each.dispose();
         else each.stop();
     }
+
+    for (const folder of states.splice(0)) rmSync(folder, { recursive: true, force: true });
 });
 
 function serve(options: Parameters<typeof fakeRex>[0] = {}): FakeRex {
@@ -25,7 +31,19 @@ function serve(options: Parameters<typeof fakeRex>[0] = {}): FakeRex {
     return server;
 }
 
-function module(settings: Record<string, string> = {}): FakeWeb {
+function module(settings: Record<string, string> = {}, ledger?: Record<string, unknown>): FakeWeb {
+    // A module remembers what it made in Pi Pocket's data folder, so a test gets a folder of its own: the tests of
+    // this repository never write into the folder of the person who runs them.
+    const state = mkdtempSync(join(tmpdir(), "rex-state-"));
+
+    process.env.PI_POCKET_DIR = state;
+    states.push(state);
+
+    if (ledger !== undefined) {
+        mkdirSync(join(state, "rex"), { recursive: true });
+        writeFileSync(join(state, "rex", "made.json"), JSON.stringify(ledger));
+    }
+
     const fake = fakeWeb({ settings });
 
     made.push(fake);
@@ -81,6 +99,7 @@ test("lists the windows of a session, with the shell that each one holds", async
                 },
             ],
         },
+        title: "vim README.md",
     });
     const fake = module({ local: local.url });
 
@@ -91,11 +110,42 @@ test("lists the windows of a session, with the shell that each one holds", async
             id: "session:1",
             label: "Pi Pocket",
             windows: [
-                { id: "window:1", label: "Here", block: "block:1" },
+                // A window that this module did not make carries the name that the program in it gives itself.
+                { id: "window:1", label: "vim README.md", block: "block:1" },
                 { id: "window:2", label: "notes", block: "" },
             ],
         },
     ]);
+});
+
+test("names a window that this module made after its conversation", async () => {
+    const local = serve({
+        sessions: [{ session_id: "session:1", label: "Pi Pocket" }],
+        windows: {
+            "session:1": [
+                {
+                    window_id: "window:1",
+                    label: "Here",
+                    blocks: [{ block_id: "block:1", creator_name: "com.superlogical.terminal", label: "Here" }],
+                },
+            ],
+        },
+        title: "vim README.md",
+    });
+    // The ledger says that the window is the conversation's, so the name of the conversation is the name of the window.
+    const fake = module(
+        { local: local.url },
+        {
+            [local.url]: {
+                blocks: { "session:1": ["block:1"] },
+                conversations: { "7": { session: "session:1", window: "window:1", block: "block:1", title: "Here", folder: "/tmp" } },
+            },
+        },
+    );
+
+    const rows = await hosts(fake);
+
+    expect(rows[0]!.sessions[0]!.windows).toEqual([{ id: "window:1", label: "Here", block: "block:1" }]);
 });
 
 test("adds the hosts that this machine's server knows, with their own labels and icons", async () => {

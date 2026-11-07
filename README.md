@@ -62,8 +62,9 @@ the way in.
 
 The panel is the other way in: `Control+Backquote` opens **this conversation's own terminal**, which is a window in the
 Pi Pocket session on this machine, named after the conversation and started in its folder the first time that it is
-asked for. A person who comes back to it — after a reload, or from another tab — finds the same window, because it is
-found by name rather than remembered by a number.
+asked for. A person who comes back to it — after a reload, or from another tab — finds the same window, because the
+module writes down which window is the conversation's. The name of a window is not enough for that: two conversations
+can share a name, such as two worktrees of one branch, and each of them keeps its own shell in its own folder.
 
 ## Choosing another machine or window
 
@@ -77,9 +78,18 @@ another machine and the terminal opens this conversation's window there. Tap a w
 in that window. From then on `Control+Backquote` returns to the same one, and the bar says which machine and window it
 is. Tap **This conversation's own terminal**, at the top of the list, to come back to this machine.
 
+A window that a person made in Rex carries the name that the program in it gives itself, such as the file that an
+editor has open, or the folder that it runs in when the program gives no name. The folder is short: its last three
+parts, and a mark that there were more. A window that Pi Pocket made carries the name of its conversation.
+
 A shell that was open before keeps running in Rex when another one is chosen: the terminal only stops watching it. A
 window that the terminal only watches is never closed by Pi Pocket, not when the terminal goes, and not when the
 conversation is archived: that shell belongs to the program that was in it.
+
+The bar names the shell that it shows. A shell that Pi Pocket made carries the name of its conversation. A shell that
+the module only watches carries the name that the program in it gives itself, such as the file that an editor has open,
+or the folder that it runs in when the program gives no name. The folder is short: its last three parts, and a mark
+that there were more.
 
 ## How it is put together
 
@@ -159,17 +169,25 @@ conversations stay as they are. The session goes only if that was its last windo
 A session that still holds a block stays: an editor, or a program that a person started in Rex beside the shell. A
 reload is a goodbye and a hello a moment apart, so the module waits ten seconds before it ends anything.
 
-A tab that **dies** — a crashed browser, a phone that lost its network, a Pi Pocket that a restart took — says no
-goodbye, and would leave its shells behind for good. So the module writes down the session that it makes, and the blocks
-that it opened in it, in `~/.pi-pocket/rex/made.json` (`PI_POCKET_DIR` moves the folder), and a tab that says hello is the
-moment that it looks at them: every block in that file that no terminal holds is closed, and a session in it that no
-block is left in is destroyed. Whether a client has the session open says nothing about a person's work, because Rex.app
-stays attached to every session there is, so an empty one is a leftover. A look waits a minute before the next one, since
-a reload is a hello too.
+A tab that **dies** — a crashed browser, a phone that lost its network — says no goodbye, and would leave its shells
+behind for good. So the module writes down the session that it makes, the blocks that it opened in it, and the window
+that each conversation got, with the name and the folder that it carries, in `~/.pi-pocket/rex/made.json`
+(`PI_POCKET_DIR` moves the folder), and a tab that says hello is the moment that it looks at them: a block that no
+conversation owns is closed, and a session in it that no block is left in is destroyed. Whether a client has the session
+open says nothing about a person's work, because Rex.app stays attached to every session there is, so an empty one is a
+leftover. A look waits a minute before the next one, since a reload is a hello too.
+
+A shell that a conversation owns is not one of those. It keeps running, and the person comes back to it: the next
+terminal of that conversation opens the shell that was there, with the program that was in it still running. A restart of
+Pi Pocket, or of this extension, loses nothing that a conversation owns.
 
 Nothing outside that file is ever destroyed: a session that Rex.app made, or that a person made with the Rex CLI, is not
 the module's to end, however empty it is. A session that an older Pi Pocket made for a conversation is such a session,
 because the file that it kept was a list of names; `rex session ls` shows it, and `rex session kill <id>` clears it.
+
+A file from a version that kept only the sessions and the blocks says nothing about the windows. The first shell of
+each conversation after that version starts a window of its own, and the look closes the shells that the older version
+left behind.
 
 ## The font
 

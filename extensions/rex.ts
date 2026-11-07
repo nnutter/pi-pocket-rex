@@ -64,6 +64,9 @@ const MAX_TERMINALS = 8;
 /** How long a terminal that ended stays in the list, so its page can say what happened. */
 const KEEP_ENDED_MS = 15 * 60_000;
 
+/** How long the name that a shell gives itself is kept, before Rex is asked for it again. */
+const TITLE_TTL_MS = 60_000;
+
 /** How long a runner has to say that its screen is up. */
 const RUNNER_START_MS = 10_000;
 
@@ -96,7 +99,14 @@ interface Terminal {
     rows: number;
     createdAt: number;
     title: string;
+    /**
+     * The name that the program in the shell gives itself, for a shell that this module did not make: the name of
+     * the window is the person’s own, and the shell’s own name says what runs in it.
+     */
+    shellTitle: string;
     alive: boolean;
+    /** When the terminal ended, so that the list can let it go after a while. */
+    endedAt: number | null;
     exitCode: number | null;
     signal: string | null;
     proc: ChildProcessWithoutNullStreams;
@@ -135,10 +145,34 @@ interface Watched {
 }
 
 /**
- * The sessions that this module made, by the machine that holds each one, and the blocks that it opened in each of
- * them.
+ * The window and the shell that a conversation got, which the ledger keeps so that the module finds the shell of that
+ * conversation and not the shell of another one.
  */
-type Ledger = Map<string, Map<string, Set<string>>>;
+interface Conversation {
+    /** The Rex session that holds the window. */
+    session: string;
+    /** The window that the conversation got. */
+    window: string;
+    /** The shell in that window. */
+    block: string;
+    /** The name of the conversation, and the folder that its shell runs in. */
+    title: string;
+    folder: string;
+}
+
+/**
+ * What this module made on a machine: the sessions that it opened, the blocks in them, and the window that each
+ * conversation got.
+ */
+interface Made {
+    /** The blocks that this module opened, by the Rex session that holds them. */
+    blocks: Map<string, Set<string>>;
+    /** The window and the shell that a conversation got, by the conversation's id. */
+    conversations: Map<string, Conversation>;
+}
+
+/** What this module made, by the endpoint of the machine that holds each one. */
+type Ledger = Map<string, Made>;
 
 export default function createRex(_host: Host | null, web: Web) {
     const terminals = new Map<string, Terminal>();
@@ -151,6 +185,9 @@ export default function createRex(_host: Host | null, web: Web) {
      * sessions that they leave empty go with them.
      */
     const tabs = new Set<string>();
+
+    /** The name that each shell gives itself, by the block that it runs in, and when Rex was last asked for it. */
+    const shellTitles = new Map<string, { title: string; at: number }>();
 
     /** The goodbye that waits for a tab to come back, while one waits. */
     let leaving: ReturnType<typeof setTimeout> | null = null;
@@ -183,22 +220,56 @@ export default function createRex(_host: Host | null, web: Web) {
             const held = JSON.parse(readFileSync(ledgerFile, "utf8")) as Record<string, unknown>;
 
             for (const [host, made] of Object.entries(held)) {
-                const sessions = new Map<string, Set<string>>();
+                const machine: Made = { blocks: new Map(), conversations: new Map() };
 
                 // The ledger of the version that kept sessions alone, whose blocks it never wrote down.
                 if (Array.isArray(made)) {
-                    for (const each of made) if (typeof each === "string") sessions.set(each, new Set());
+                    for (const each of made) if (typeof each === "string") machine.blocks.set(each, new Set());
                 }
 
                 if (made !== null && typeof made === "object" && !Array.isArray(made)) {
-                    for (const [sessionId, blocks] of Object.entries(made as Record<string, unknown>)) {
-                        if (!Array.isArray(blocks)) continue;
+                    const told = made as Record<string, unknown>;
 
-                        sessions.set(sessionId, new Set(blocks.filter((each) => typeof each === "string")));
+                    if (told.blocks !== undefined || told.conversations !== undefined) {
+                        // The ledger of this version: the blocks of each session, and the window of each conversation.
+                        if (told.blocks !== null && typeof told.blocks === "object") {
+                            for (const [sessionId, blocks] of Object.entries(told.blocks as Record<string, unknown>)) {
+                                if (!Array.isArray(blocks)) continue;
+
+                                machine.blocks.set(sessionId, new Set(blocks.filter((each) => typeof each === "string")));
+                            }
+                        }
+
+                        if (told.conversations !== null && typeof told.conversations === "object") {
+                            for (const [conversation, found] of Object.entries(told.conversations as Record<string, unknown>)) {
+                                if (found === null || typeof found !== "object") continue;
+
+                                const said = found as Partial<Conversation>;
+
+                                if (typeof said.session !== "string" || typeof said.window !== "string") continue;
+                                if (typeof said.block !== "string") continue;
+                                if (typeof said.title !== "string" || typeof said.folder !== "string") continue;
+
+                                machine.conversations.set(conversation, {
+                                    session: said.session,
+                                    window: said.window,
+                                    block: said.block,
+                                    title: said.title,
+                                    folder: said.folder,
+                                });
+                            }
+                        }
+                    } else {
+                        // The ledger of the version that kept the blocks of each session.
+                        for (const [sessionId, blocks] of Object.entries(told)) {
+                            if (!Array.isArray(blocks)) continue;
+
+                            machine.blocks.set(sessionId, new Set(blocks.filter((each) => typeof each === "string")));
+                        }
                     }
                 }
 
-                if (sessions.size > 0) kept.set(host, sessions);
+                if (machine.blocks.size > 0 || machine.conversations.size > 0) kept.set(host, machine);
             }
         } catch {
             // A module that remembers nothing is a module that ends nothing that it did not make, which is the safe way
@@ -210,16 +281,20 @@ export default function createRex(_host: Host | null, web: Web) {
 
     /** Writes the ledger down, so that the next run of this module can find what this one made. */
     function saveLedger(): void {
-        const held: Record<string, Record<string, string[]>> = {};
+        const held: Record<string, { blocks: Record<string, string[]>; conversations: Record<string, Conversation> }> = {};
 
-        for (const [host, sessions] of ledger) {
-            if (sessions.size === 0) continue;
+        for (const [host, machine] of ledger) {
+            const blocks: Record<string, string[]> = {};
 
-            const made: Record<string, string[]> = {};
+            for (const [sessionId, list] of machine.blocks) blocks[sessionId] = [...list];
 
-            for (const [sessionId, blocks] of sessions) made[sessionId] = [...blocks];
+            const conversations: Record<string, Conversation> = {};
 
-            held[host] = made;
+            for (const [conversation, found] of machine.conversations) conversations[conversation] = found;
+
+            if (Object.keys(blocks).length === 0 && Object.keys(conversations).length === 0) continue;
+
+            held[host] = { blocks, conversations };
         }
 
         try {
@@ -231,23 +306,39 @@ export default function createRex(_host: Host | null, web: Web) {
         }
     }
 
+    /** What this module made on a machine, which is made when the module needs it for the first time. */
+    function machineOf(hostKey: string): Made {
+        const found = ledger.get(hostKey);
+
+        if (found !== undefined) return found;
+
+        const fresh: Made = { blocks: new Map(), conversations: new Map() };
+
+        ledger.set(hostKey, fresh);
+
+        return fresh;
+    }
+
     /** Says that this module made a session, so that a look after a restart can find it. */
     function remember(hostKey: string, sessionId: string): void {
-        const sessions = ledger.get(hostKey) ?? new Map<string, Set<string>>();
+        const blocks = machineOf(hostKey).blocks;
 
-        ledger.set(hostKey, sessions);
+        if (blocks.has(sessionId)) return;
 
-        if (sessions.has(sessionId)) return;
-
-        sessions.set(sessionId, new Set());
+        blocks.set(sessionId, new Set());
         saveLedger();
     }
 
     /** Says that a session that this module made is gone. */
     function forget(hostKey: string, sessionId: string): void {
-        const sessions = ledger.get(hostKey);
+        const found = ledger.get(hostKey);
 
-        if (sessions === undefined || !sessions.delete(sessionId)) return;
+        if (found === undefined || !found.blocks.delete(sessionId)) return;
+
+        // The windows of a session that is gone are gone with it.
+        for (const [conversation, said] of found.conversations) {
+            if (said.session === sessionId) found.conversations.delete(conversation);
+        }
 
         saveLedger();
     }
@@ -256,7 +347,7 @@ export default function createRex(_host: Host | null, web: Web) {
     function rememberBlock(hostKey: string, sessionId: string, blockId: string): void {
         remember(hostKey, sessionId);
 
-        const blocks = ledger.get(hostKey)?.get(sessionId);
+        const blocks = machineOf(hostKey).blocks.get(sessionId);
 
         if (blocks === undefined || blocks.has(blockId)) return;
 
@@ -266,13 +357,50 @@ export default function createRex(_host: Host | null, web: Web) {
 
     /** Says that a block is no longer this module's: it closed the block, or gave it back. */
     function forgetBlock(hostKey: string, blockId: string): void {
-        const sessions = ledger.get(hostKey);
+        const found = ledger.get(hostKey);
 
-        if (sessions === undefined) return;
+        if (found === undefined) return;
 
-        for (const blocks of sessions.values()) {
+        for (const blocks of found.blocks.values()) {
             if (!blocks.delete(blockId)) continue;
 
+            saveLedger();
+
+            return;
+        }
+    }
+
+    /**
+     * Says which window a conversation got, so that a later look finds that window and not another one.
+     *
+     * The name of a window is the name of its conversation, and two conversations can share a name: two worktrees of
+     * one branch, or two conversations that a person gave the same title. The ledger says which window is whose.
+     */
+    function rememberWindow(hostKey: string, conversation: number, found: Conversation): void {
+        const held = machineOf(hostKey);
+        const key = String(conversation);
+        const known = held.conversations.get(key);
+
+        // The first window of a conversation is the one that a later ask comes back to. A second shell in the same
+        // conversation is another window, and the first one stays the one that the conversation owns.
+        if (known !== undefined && known.window !== found.window) return;
+
+        if (known?.title === found.title && known?.folder === found.folder) return;
+
+        held.conversations.set(key, found);
+        saveLedger();
+    }
+
+    /** Says that a conversation has no window, because the shell in it closed. */
+    function forgetWindow(hostKey: string, blockId: string): void {
+        const found = ledger.get(hostKey);
+
+        if (found === undefined) return;
+
+        for (const [conversation, said] of found.conversations) {
+            if (said.block !== blockId) continue;
+
+            found.conversations.delete(conversation);
             saveLedger();
 
             return;
@@ -549,11 +677,21 @@ export default function createRex(_host: Host | null, web: Web) {
      * the first time that a terminal is asked for.
      *
      * A session is found by its label rather than remembered in memory, so that a person who restarts Pi Pocket, or
-     * opens a terminal from another tab, comes back to the session that they left instead of a second one.
+     * opens a terminal from another tab, comes back to the session that they left instead of a second one. The session
+     * that the windows of this machine's conversations are in comes first: a machine can hold more than one session
+     * that carries the name, and the windows of this module are in one of them.
      */
     async function pocketSession(host: RexHost): Promise<string> {
         const client = await online(host);
-        const found = (await client.sessions()).find((each) => (each.label ?? "").trim() === POCKET_SESSION);
+        const sessions = await client.sessions();
+
+        const held = [...(ledger.get(host.key)?.conversations.values() ?? [])]
+            .map((each) => each.session)
+            .find((each) => sessions.some((session) => session.session_id === each));
+
+        if (held !== undefined) return held;
+
+        const found = sessions.find((each) => (each.label ?? "").trim() === POCKET_SESSION);
 
         if (found !== undefined) return found.session_id;
 
@@ -572,9 +710,9 @@ export default function createRex(_host: Host | null, web: Web) {
      * A shell for one conversation, in the Pi Pocket session: the shell of the conversation's own window, or a new
      * window for it.
      *
-     * A window is found by its label rather than remembered, so that a person who reloads the page, or opens the
-     * terminal from another tab, comes back to the shell that they left. The label is the conversation's title, which
-     * is what the person calls the conversation in Pi Pocket, and what the bar under the terminal shows.
+     * The window of a conversation is the one that the ledger holds for it, so that a person who reloads the page, or
+     * opens the terminal from another tab, comes back to the shell that they left. The folder of the conversation is
+     * the check: a shell that runs in another folder is not the shell of this conversation, whatever the ledger says.
      */
     async function shellFor(
         request: WebRequest,
@@ -586,21 +724,24 @@ export default function createRex(_host: Host | null, web: Web) {
         const client = await online(host);
         const windows = (await view(client, sessionId)).windows ?? [];
         const name = windowName(request.sessions(), conversation);
+        const folder = folderOf(request.sessions(), conversation);
+        const own = windowOf(host.key, conversation, folder, windows);
+
+        // The name of a window is the name of its conversation, and a person reads both. A conversation that a person
+        // renamed gives its window the new name, so that Rex shows the name that the person knows.
+        if (own !== undefined) await renameWindow(client, host.key, conversation, sessionId, own, name);
 
         // The bar's New shell asks for another shell in the same folder, so it never comes back to the one that is
         // already there.
-        if (!fresh) {
-            const own = windows.find((each) => (each.label ?? "").trim() === name);
-            const shell = own === undefined ? undefined : shellIn(own)?.block_id;
+        if (!fresh && own !== undefined) {
+            const shell = shellIn(own)?.block_id;
 
-            if (own !== undefined && typeof shell === "string" && shell !== "") {
+            if (typeof shell === "string" && shell !== "") {
                 return { windowId: own.window_id, blockId: shell, windowLabel: name, owned: true };
             }
         }
 
-        const folder = request.sessions().find((each) => each.id === conversation);
-
-        return await newShell(client, host.key, sessionId, name, folder?.cwd ?? homedir(), takenOf(windows));
+        return await newShell(client, host.key, sessionId, name, folder, takenOf(windows), conversation);
     }
 
     /**
@@ -630,11 +771,70 @@ export default function createRex(_host: Host | null, web: Web) {
     }
 
     /**
+     * The name that a shell gives itself: the name that the program in it set, or the folder that it runs in when it
+     * set none.
+     *
+     * Rex knows both. The name is the one that a program sets with the escape sequence that names a window, such as
+     * an editor that says which file it has open. The folder is where the program runs, which says what the shell is
+     * for when the program says nothing.
+     */
+    async function shellTitleOf(client: RexClient, sessionId: string, blockId: string): Promise<string> {
+        const known = shellTitles.get(blockId);
+
+        // The name that a program gives itself changes when the program says so, and the list of the sessions reads
+        // again every few seconds: the name is asked for again now and then, and not on every read.
+        if (known !== undefined && Date.now() - known.at < TITLE_TTL_MS) return known.title;
+
+        const named = await client
+            .call<{ title?: string }>(`${TERMINAL_CREATOR}.title`, {
+                session_id: sessionId,
+                block_id: blockId,
+                args: {},
+            })
+            .then((answer) => (answer.title ?? "").trim())
+            .catch(() => "");
+
+        if (named !== "") {
+            shellTitles.set(blockId, { title: named, at: Date.now() });
+
+            return named;
+        }
+
+        const running = await client
+            .call<{ foreground?: { cwd?: string } }>(`${TERMINAL_CREATOR}.process`, {
+                session_id: sessionId,
+                block_id: blockId,
+                args: {},
+            })
+            .then((answer) => answer.foreground?.cwd ?? "")
+            .catch(() => "");
+
+        const folder = shortPath(running);
+
+        shellTitles.set(blockId, { title: folder, at: Date.now() });
+
+        return folder;
+    }
+
+    /**
+     * A path that a person can read at a glance: the last three of its parts, and a mark that there were more.
+     */
+    function shortPath(path: string): string {
+        const parts = path.split("/").filter((each) => each !== "");
+
+        if (parts.length === 0) return path;
+
+        const last = parts.slice(-3);
+
+        return last.length < parts.length ? `…/${last.join("/")}` : last.join("/");
+    }
+
+    /**
      * A new window in the Pi Pocket session, with one shell in it, named after the conversation that asked for it.
      *
      * The window carries the conversation's name, so that a person looking at Rex sees which conversation each window
-     * is for, and so that the module finds that window again by the same name. The block carries the same name: Rex
-     * shows both, and a person reads them as one thing.
+     * is for. The block carries the same name: Rex shows both, and a person reads them as one thing. The ledger says
+     * which window is the conversation's, because two conversations can carry the same name.
      */
     async function newShell(
         client: RexClient,
@@ -643,6 +843,7 @@ export default function createRex(_host: Host | null, web: Web) {
         name: string,
         cwd: string,
         taken: ReadonlySet<string>,
+        conversation = 0,
     ): Promise<Shell> {
         const label = freeName(taken, name);
         const made = await client.call<{ window_id?: string | null; block_ids?: string[] | null }>("session.new_window", {
@@ -659,7 +860,76 @@ export default function createRex(_host: Host | null, web: Web) {
 
         rememberBlock(hostKey, sessionId, blockId);
 
+        // The window of a conversation is the first one that it got. A second shell in the same conversation is
+        // another window, and the first one stays the one that the conversation comes back to.
+        if (conversation !== 0) {
+            rememberWindow(hostKey, conversation, {
+                session: sessionId,
+                window: made.window_id,
+                block: blockId,
+                title: name,
+                folder: cwd,
+            });
+        }
+
         return { windowId: made.window_id, blockId, windowLabel: label, owned: true };
+    }
+
+    /**
+     * The window that a conversation got, in the windows that the session holds now.
+     *
+     * The folder of the conversation is the check. A conversation that a person moved to another folder gets a shell in
+     * that folder, and a window that Rex no longer holds is gone, so the conversation gets a new one.
+     */
+    function windowOf(
+        hostKey: string,
+        conversation: number,
+        folder: string,
+        windows: readonly RexWindow[],
+    ): RexWindow | undefined {
+        const found = ledger.get(hostKey)?.conversations.get(String(conversation));
+
+        if (found === undefined) return undefined;
+
+        if (found.folder !== folder) {
+            forgetWindow(hostKey, found.block);
+
+            return undefined;
+        }
+
+        const window = windows.find((each) => each.window_id === found.window);
+
+        if (window === undefined) forgetWindow(hostKey, found.block);
+
+        return window;
+    }
+
+    /**
+     * Names the window of a conversation after the conversation again, when the conversation was renamed.
+     *
+     * A window that a person renamed in Rex keeps that name: the module does not know why it changed, and the
+     * conversation did not.
+     */
+    async function renameWindow(
+        client: RexClient,
+        hostKey: string,
+        conversation: number,
+        sessionId: string,
+        window: RexWindow,
+        title: string,
+    ): Promise<void> {
+        const found = ledger.get(hostKey)?.conversations.get(String(conversation));
+
+        if (found === undefined || found.title === title) return;
+
+        await client
+            .call("session.set_window_label", { session_id: sessionId, window_id: window.window_id, label: title })
+            .catch(() => {});
+
+        // The name of the window in the view is the name that the conversation has now.
+        window.label = title;
+
+        rememberWindow(hostKey, conversation, { ...found, title });
     }
 
     /** The blocks of a window, which Rex keeps in the layers that the window splits into. */
@@ -679,7 +949,7 @@ export default function createRex(_host: Host | null, web: Web) {
 
     /** Whether this module made a block: the ledger still says that it holds it, and has not given it back. */
     function mine(hostKey: string, sessionId: string, blockId: string): boolean {
-        return ledger.get(hostKey)?.get(sessionId)?.has(blockId) === true;
+        return ledger.get(hostKey)?.blocks.get(sessionId)?.has(blockId) === true;
     }
 
     /** The names that the windows of a session already carry, which a new window's name must not repeat. */
@@ -690,6 +960,11 @@ export default function createRex(_host: Host | null, web: Web) {
     /** The name of a conversation's window in Rex: the conversation's title, which is what a person calls it there. */
     function windowName(sessions: readonly WebSession[], conversation: number): string {
         return (sessions.find((each) => each.id === conversation)?.title ?? "").trim() || POCKET_SESSION;
+    }
+
+    /** The folder of a conversation, which is where its shell runs. */
+    function folderOf(sessions: readonly WebSession[], conversation: number): string {
+        return sessions.find((each) => each.id === conversation)?.cwd ?? homedir();
     }
 
     /**
@@ -750,12 +1025,24 @@ export default function createRex(_host: Host | null, web: Web) {
             await client.call("session.attach", { session_id: sessionId });
 
             const windows = (await view(client, sessionId)).windows ?? [];
+            const made = madeWindows(hostKey);
 
-            const listed = windows.map((window) => ({
-                id: window.window_id,
-                label: (window.label ?? "").trim(),
-                block: shellIn(window)?.block_id ?? "",
-            }));
+            const listed = await Promise.all(
+                windows.map(async (window) => {
+                    const shell = shellIn(window);
+                    const block = shell?.block_id ?? "";
+
+                    // A window that this module made carries the name of its conversation. A window that a person
+                    // made carries the name that the program in it gives itself, so that the list says what runs in
+                    // it rather than "Window 436d154c".
+                    const label =
+                        made.has(window.window_id) || block === ""
+                            ? (window.label ?? "").trim()
+                            : await shellTitleOf(client, sessionId, block);
+
+                    return { id: window.window_id, label, block };
+                }),
+            );
 
             if (!held(hostKey, sessionId)) await stepOut(client, sessionId);
 
@@ -763,6 +1050,15 @@ export default function createRex(_host: Host | null, web: Web) {
         } catch {
             return [];
         }
+    }
+
+    /** The windows that this module made on a machine, which the ledger names for the conversations that got them. */
+    function madeWindows(hostKey: string): Set<string> {
+        const made = new Set<string>();
+
+        for (const found of ledger.get(hostKey)?.conversations.values() ?? []) made.add(found.window);
+
+        return made;
     }
 
     /** The terminal that a Rex block belongs to, when this module has one. */
@@ -804,6 +1100,10 @@ export default function createRex(_host: Host | null, web: Web) {
             hostLabel: terminal.hostLabel,
             session: terminal.sessionId,
             windowLabel: terminal.windowLabel,
+            /** Whether this module opened the shell, or only watches the one that Rex already had. */
+            owned: terminal.owned,
+            /** The name that the terminal shows: the name of the window, or the name that the shell gives itself. */
+            shellTitle: displayTitle(terminal),
             block: terminal.blockId,
             cols: terminal.cols,
             rows: terminal.rows,
@@ -813,6 +1113,14 @@ export default function createRex(_host: Host | null, web: Web) {
             signal: terminal.signal,
             createdAt: terminal.createdAt,
         };
+    }
+
+    /**
+     * The name that a terminal shows: the name of the window for a shell that this module made, and the name that the
+     * shell gives itself for one that it did not.
+     */
+    function displayTitle(terminal: Terminal): string {
+        return terminal.owned ? terminal.windowLabel : terminal.shellTitle;
     }
 
     /** The whole screen, for a page that just opened or reloaded. */
@@ -831,7 +1139,7 @@ export default function createRex(_host: Host | null, web: Web) {
     }
 
     function tell(terminal: Terminal, frame: Frame): void {
-        web.send("frame", { id: terminal.id, frame });
+        web.send("frame", { id: terminal.id, frame, title: displayTitle(terminal) });
     }
 
     /** Takes one JSON line from the runner: a frame, a word about the program, or an answer to give the terminal. */
@@ -851,6 +1159,13 @@ export default function createRex(_host: Host | null, web: Web) {
             terminal.cols = frame.cols;
             terminal.rows = frame.rows;
             terminal.title = frame.title;
+
+            // The name that the program gives itself: a shell that this module did not make shows it, and one that it
+            // made keeps the name of the conversation.
+            if (!terminal.owned && frame.title !== "") {
+                terminal.shellTitle = frame.title;
+                shellTitles.set(terminal.blockId, { title: frame.title, at: Date.now() });
+            }
             terminal.cursor = frame.cursor;
             terminal.alt = frame.alt;
             terminal.scrollback = frame.scroll?.scrollback ?? 0;
@@ -922,8 +1237,25 @@ export default function createRex(_host: Host | null, web: Web) {
         terminal.alive = false;
         terminal.exitCode = code;
         terminal.signal = null;
+        terminal.endedAt = Date.now();
 
         web.send("exit", { id: terminal.id, code, signal: null });
+    }
+
+    /**
+     * The terminals that ended long ago, which leave the list.
+     *
+     * A terminal that ended stays in the list for a while, so that the page that shows the list can say what happened
+     * to it. The wait starts when the terminal ends, not when it was made.
+     */
+    function forgetEnded(): void {
+        const now = Date.now();
+
+        for (const [id, terminal] of terminals) {
+            if (terminal.endedAt === null || now - terminal.endedAt < KEEP_ENDED_MS) continue;
+
+            terminals.delete(id);
+        }
     }
 
     /** Starts the runner, which draws the screen that the stream fills, and gives the terminal its process. */
@@ -982,12 +1314,7 @@ export default function createRex(_host: Host | null, web: Web) {
         });
 
         proc.on("exit", (code) => {
-            if (terminal.alive) {
-                terminal.alive = false;
-                terminal.exitCode = code;
-                terminal.signal = null;
-                web.send("exit", { id: terminal.id, code, signal: null });
-            }
+            if (terminal.alive) ended(terminal, code);
         });
 
         terminal.proc = proc;
@@ -1023,6 +1350,10 @@ export default function createRex(_host: Host | null, web: Web) {
             args: { columns: cols, rows },
         });
 
+        // A shell that this module did not make has no name of its own that the module knows: the name that the
+        // program in it gives itself, or the folder that it runs in.
+        const shellTitle = shell.owned ? "" : await shellTitleOf(client, sessionId, blockId);
+
         const terminal: Terminal = {
             id: randomUUID(),
             conversation,
@@ -1037,7 +1368,9 @@ export default function createRex(_host: Host | null, web: Web) {
             rows,
             createdAt: Date.now(),
             title: "",
+            shellTitle,
             alive: true,
+            endedAt: null,
             exitCode: null,
             signal: null,
             proc: null as unknown as ChildProcessWithoutNullStreams,
@@ -1270,6 +1603,9 @@ export default function createRex(_host: Host | null, web: Web) {
         for (const blockId of session.blocks) {
             await session.client.call("block.close", { session_id: session.sessionId, block_id: blockId }).catch(() => {});
             forgetBlock(session.hostKey, blockId);
+
+            // The window of a conversation goes when its shell closes, so that the conversation gets a new one.
+            forgetWindow(session.hostKey, blockId);
         }
 
         if (await destroyIfEmpty(session.client, session.sessionId)) {
@@ -1294,7 +1630,7 @@ export default function createRex(_host: Host | null, web: Web) {
         let changed = false;
 
         for (const host of await hostList()) {
-            const sessions = ledger.get(host.key);
+            const sessions = ledger.get(host.key)?.blocks;
 
             if (sessions === undefined || sessions.size === 0) continue;
 
@@ -1302,23 +1638,42 @@ export default function createRex(_host: Host | null, web: Web) {
                 const client = await online(host);
 
                 for (const [sessionId, blocks] of [...sessions]) {
+                    // A session that a terminal of this module is in is not one to clean up: the blocks in it are
+                    // being watched.
+                    if (held(host.key, sessionId)) continue;
+
+                    // Rex only lets a connection that is attached to a session close a block in it, and answers a
+                    // conflict otherwise. The look attaches first, so that the blocks that a dead tab left can close.
+                    await client.call("session.attach", { session_id: sessionId }).catch(() => {});
+
                     for (const blockId of [...blocks]) {
                         if (holds(host.key, blockId)) continue;
+
+                        // A shell that a conversation owns is not an orphan: the person comes back to it, and the
+                        // module finds it again by the window that the ledger holds for that conversation. This is
+                        // what keeps a shell alive across a restart of Pi Pocket.
+                        if (claimed(host.key, blockId)) continue;
 
                         if (!(await closeForGood(client, sessionId, blockId))) continue;
 
                         blocks.delete(blockId);
+
+                        // The window of a conversation goes when its shell closes, so that the conversation gets a new
+                        // one the next time that it asks for a shell.
+                        forgetWindow(host.key, blockId);
+
                         changed = true;
                     }
 
-                    if (blocks.size > 0 || held(host.key, sessionId)) continue;
-
-                    if (await destroyIfEmpty(client, sessionId)) {
+                    if (blocks.size === 0 && (await destroyIfEmpty(client, sessionId))) {
                         sessions.delete(sessionId);
                         changed = true;
-                    } else {
-                        await stepOut(client, sessionId);
+
+                        continue;
                     }
+
+                    // A session that this module does not hold is not one that it watches, so the look steps out of it.
+                    await stepOut(client, sessionId);
                 }
             } catch {
                 // A machine that cannot be asked keeps what it has: an empty session in Rex is better than a guess about
@@ -1350,6 +1705,15 @@ export default function createRex(_host: Host | null, web: Web) {
     function holds(hostKey: string, blockId: string): boolean {
         for (const terminal of terminals.values()) {
             if (terminal.hostKey === hostKey && terminal.blockId === blockId) return true;
+        }
+
+        return false;
+    }
+
+    /** Whether a conversation owns the block: the shell of a window that the ledger holds for one. */
+    function claimed(hostKey: string, blockId: string): boolean {
+        for (const found of ledger.get(hostKey)?.conversations.values() ?? []) {
+            if (found.block === blockId) return true;
         }
 
         return false;
@@ -1452,6 +1816,9 @@ export default function createRex(_host: Host | null, web: Web) {
     web.route("GET", "terminals", (request) => {
         closeArchived(request.sessions());
 
+        // The terminals that ended long ago leave the list when it is read.
+        forgetEnded();
+
         return {
             // Every terminal, with the session that it was opened from: the page that lists them all says whose each one
             // is, so that a person can tell the terminal beside their work from the one that a closed tab left behind.
@@ -1526,20 +1893,38 @@ export default function createRex(_host: Host | null, web: Web) {
         const picked = pickedSession !== "" && pickedBlock !== "";
         const host = named === "" ? await ownHost() : await hostOf(named);
         const client = await online(host);
-        const sessionId = picked ? pickedSession : await pocketSession(host);
+        let sessionId = picked ? pickedSession : await pocketSession(host);
+        let shell: Shell | undefined;
 
         // A session that this page is not a viewer of will not own a block for it, and a window is no use to a page
         // that cannot see it.
-        await client.call("session.attach", { session_id: sessionId });
+        if (picked) {
+            try {
+                await client.call("session.attach", { session_id: sessionId });
 
-        const shell = picked
-            ? await shellAt(client, host.key, sessionId, pickedBlock)
-            : await shellFor(request, host, sessionId, conversation, fresh);
+                shell = await shellAt(client, host.key, sessionId, pickedBlock);
+            } catch {
+                // The shell that the person picked is gone: the window closed, or the session went with it. The
+                // terminal opens the shell of the conversation instead, and the page forgets the choice.
+                shell = undefined;
+            }
+        }
+
+        if (shell === undefined) {
+            sessionId = await pocketSession(host);
+
+            await client.call("session.attach", { session_id: sessionId });
+
+            shell = await shellFor(request, host, sessionId, conversation, fresh);
+        }
 
         // One terminal for each shell: a page that reloads finds the one that it left rather than a second stream.
         const existing = [...terminals.values()].find((each) => each.alive && each.hostKey === host.key && each.blockId === shell.blockId);
 
         if (existing !== undefined) {
+            // A window that a conversation renamed carries the new name now, and the bar under the terminal shows it.
+            existing.windowLabel = shell.windowLabel;
+
             if (existing.cols !== cols || existing.rows !== rows) {
                 existing.cols = cols;
                 existing.rows = rows;
@@ -1561,12 +1946,6 @@ export default function createRex(_host: Host | null, web: Web) {
         }
 
         const terminal = await start(request, host, sessionId, shell, conversation, cols, rows);
-
-        const timer = setTimeout(() => {
-            if (!terminal.alive) terminals.delete(terminal.id);
-        }, KEEP_ENDED_MS);
-
-        timer.unref();
 
         return { terminal: summary(terminal), frame: snapshot(terminal) };
     });

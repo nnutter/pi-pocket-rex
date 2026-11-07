@@ -4,7 +4,7 @@
  *
  * The runner is the real one, with `libghostty-vt` in this repository, so a frame here is the frame a page draws.
  */
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -76,7 +76,7 @@ function module(
          * What the module made before this run, as a data folder that a restart left it would hold it: the machine, and
          * then the sessions with the blocks in each, or the sessions alone that the first version of the ledger kept.
          */
-        ledger?: Record<string, string[] | Record<string, string[]>>;
+        ledger?: Record<string, unknown>;
     } = {},
 ): FakeWeb & { state: string } {
     // A module remembers what it made in Pi Pocket's data folder, so each one here gets its own: no test reads
@@ -86,10 +86,10 @@ function module(
     process.env.PI_POCKET_DIR = state;
     states.push(state);
 
-    if (options.ledger !== undefined) {
-        mkdirSync(join(state, "rex"), { recursive: true });
-        writeFileSync(join(state, "rex", "made.json"), JSON.stringify(options.ledger));
-    }
+    const ledger = options.ledger ?? ledgerFor(server);
+
+    mkdirSync(join(state, "rex"), { recursive: true });
+    writeFileSync(join(state, "rex", "made.json"), JSON.stringify(ledger));
 
     const fake = fakeWeb({
         settings: { local: server.url, runtime: join(root, "src") },
@@ -108,8 +108,38 @@ function module(
 }
 
 /**
+ * The ledger that a restart left the module: the machine, the session that Pi Pocket keeps on it, the shell that the
+ * conversation of these tests opened in it, and the window that holds that shell.
+ */
+function ledgerFor(server: FakeRex, conversation = "7"): Record<string, unknown> {
+    return {
+        [server.url]: {
+            blocks: { "session:1": ["block:1"] },
+            conversations: {
+                [conversation]: {
+                    session: "session:1",
+                    window: "window:1",
+                    block: "block:1",
+                    title: "Here",
+                    folder: root,
+                },
+            },
+        },
+    };
+}
+
+/**
+ * The ledger that a restart left the module, with the session that Pi Pocket keeps on the machine and nothing else in
+ * it: the session is the module's, and no shell of it is.
+ */
+function sessionLedger(server: FakeRex, sessionId = "session:1"): Record<string, unknown> {
+    return { [server.url]: { blocks: { [sessionId]: [] }, conversations: {} } };
+}
+
+/**
  * The ledger that a module in this test wrote: the blocks that it opened, by the machine that holds them and the session
- * that they are in. A ledger from the version that kept sessions alone reads as sessions with no blocks.
+ * that they are in. A ledger from the version that kept sessions alone reads as sessions with no blocks, and a ledger
+ * from the version that kept the blocks of each session reads as the same.
  */
 function ledgerOf(state: string): Record<string, Record<string, string[]>> {
     const held = JSON.parse(readFileSync(join(state, "rex", "made.json"), "utf8")) as Record<string, unknown>;
@@ -121,12 +151,62 @@ function ledgerOf(state: string): Record<string, Record<string, string[]>> {
         if (Array.isArray(made)) {
             for (const each of made) sessions[String(each)] = [];
         } else if (made !== null && typeof made === "object") {
-            for (const [sessionId, blocks] of Object.entries(made as Record<string, unknown>)) {
-                sessions[sessionId] = Array.isArray(blocks) ? blocks.map(String) : [];
+            const told = made as Record<string, unknown>;
+
+            if (told.blocks !== undefined && told.blocks !== null && typeof told.blocks === "object") {
+                for (const [sessionId, blocks] of Object.entries(told.blocks as Record<string, unknown>)) {
+                    sessions[sessionId] = Array.isArray(blocks) ? blocks.map(String) : [];
+                }
+            } else {
+                for (const [sessionId, blocks] of Object.entries(told)) {
+                    sessions[sessionId] = Array.isArray(blocks) ? blocks.map(String) : [];
+                }
             }
         }
 
         kept[host] = sessions;
+    }
+
+    return kept;
+}
+
+/** The windows that the ledger holds for the conversations, by the machine that holds them. */
+function conversationsOf(
+    state: string,
+): Record<string, Record<string, { session: string; window: string; block: string; title: string; folder: string }>> {
+    const held = JSON.parse(readFileSync(join(state, "rex", "made.json"), "utf8")) as Record<string, unknown>;
+    const kept: Record<string, Record<string, { session: string; window: string; block: string; title: string; folder: string }>> =
+        {};
+
+    for (const [host, made] of Object.entries(held)) {
+        if (made === null || typeof made !== "object" || Array.isArray(made)) continue;
+
+        const told = (made as { conversations?: Record<string, unknown> }).conversations;
+
+        if (told === undefined || told === null || typeof told !== "object") continue;
+
+        const conversations: Record<string, { session: string; window: string; block: string; title: string; folder: string }> =
+            {};
+
+        for (const [conversation, found] of Object.entries(told)) {
+            if (found === null || typeof found !== "object") continue;
+
+            const said = found as { session?: string; window?: string; block?: string; title?: string; folder?: string };
+
+            if (typeof said.session !== "string" || typeof said.window !== "string") continue;
+            if (typeof said.block !== "string" || typeof said.title !== "string") continue;
+            if (typeof said.folder !== "string") continue;
+
+            conversations[conversation] = {
+                session: said.session,
+                window: said.window,
+                block: said.block,
+                title: said.title,
+                folder: said.folder,
+            };
+        }
+
+        kept[host] = conversations;
     }
 
     return kept;
@@ -324,6 +404,48 @@ test("lists the terminals that it holds, with the machine that each is on", asyn
     expect(listing.terminals[0]).toMatchObject({ id: terminal.id, host: server.url, alive: true });
 });
 
+test("lets a terminal that ended long ago leave the list", async () => {
+    const server = serve();
+    const fake = module(server);
+
+    const { terminal } = await open(fake, server);
+
+    // The program in the shell exits, which is what Rex says when a shell ends.
+    server.pushEvent({
+        type: "session_event",
+        payload: {
+            session_id: "session:1",
+            event: {
+                type: "block_event",
+                payload: { block_id: terminal.block, name: "child_exited", payload: { exit_code: 0 } },
+            },
+        },
+    });
+
+    await Bun.sleep(100);
+
+    const now = Date.now();
+
+    try {
+        setSystemTime(new Date(now + 60_000));
+
+        const soon = await fake.call<{ terminals: Array<Summary> }>({ method: "GET", path: "terminals" });
+
+        // A terminal that just ended stays in the list, so that its page can say what happened.
+        expect(soon.terminals).toHaveLength(1);
+        expect(soon.terminals[0]).toMatchObject({ id: terminal.id, alive: false });
+
+        setSystemTime(new Date(now + 16 * 60_000));
+
+        const later = await fake.call<{ terminals: Array<Summary> }>({ method: "GET", path: "terminals" });
+
+        // And it leaves the list after a while, which the wait counts from the moment that it ended.
+        expect(later.terminals).toHaveLength(0);
+    } finally {
+        setSystemTime(new Date(now));
+    }
+});
+
 test("gives the block back when a person ends the terminal, and leaves the Rex session running", async () => {
     const server = serve();
     const fake = module(server);
@@ -368,6 +490,61 @@ test("ends the terminal of a conversation that is archived, and only that conver
 
     // The archived one is gone, and the one on the conversation that is still open is there.
     expect(listing.terminals.map((each) => each.id)).toEqual([second.terminal.id]);
+});
+
+test("opens the shell of the conversation, when the shell that a person picked is gone", async () => {
+    // A person picked a window on the rail, and it closed while the page was away: the window, or the session that
+    // held it. The terminal then opens the shell of the conversation, and says nothing about the window that is gone.
+    const server = serve({ windows: { "session:1": [here()] } });
+    const fake = module(server);
+
+    const answer = await open(fake, server, { session: "session:1", block: "block:gone" });
+
+    expect(answer.terminal).toMatchObject({ session: "session:1", block: "block:1" });
+
+    // And no window is made for the shell that is gone: the conversation's own window is the one that answers.
+    expect(methods(server)).not.toContain("session.new_window");
+});
+
+test("opens the shell of the conversation, when the session that a person picked is gone", async () => {
+    // The session that held the window that the person picked went with it.
+    const server = serve({ windows: { "session:1": [here()] } });
+    const fake = module(server);
+
+    const answer = await open(fake, server, { session: "session:gone", block: "block:2" });
+
+    expect(answer.terminal).toMatchObject({ session: "session:1", block: "block:1" });
+});
+
+test("names a shell that this module did not make, by the name that the program gives itself", async () => {
+    // A shell that a person started in Rex: the window is the person's own, and the name that the program gives itself
+    // says what runs in it.
+    const server = serve({ windows: { "session:1": [here(), theirs()] }, title: "vim README.md" });
+    const fake = module(server);
+
+    const { terminal } = await open(fake, server, { session: "session:1", block: "block:2" });
+
+    expect(terminal).toMatchObject({ shellTitle: "vim README.md", owned: false });
+});
+
+test("names a shell that this module did not make, by the folder that it runs in, when it gives no name", async () => {
+    // A shell with no name of its own: the folder that it runs in says what it is for.
+    const server = serve({ windows: { "session:1": [here(), theirs()] }, cwd: "/home/nnutter/worktrees/nnutter/ni/ni/ni" });
+    const fake = module(server);
+
+    const { terminal } = await open(fake, server, { session: "session:1", block: "block:2" });
+
+    // The folder is short enough to read: the last three of its parts.
+    expect(terminal).toMatchObject({ shellTitle: "…/ni/ni/ni" });
+});
+
+test("keeps the name of the conversation, for a shell that this module made", async () => {
+    const server = serve({ title: "vim README.md" });
+    const fake = module(server);
+
+    const { terminal } = await open(fake, server);
+
+    expect(terminal).toMatchObject({ shellTitle: "Here", owned: true });
 });
 
 test("shows the shell of a window that Rex already holds, without taking it from Rex", async () => {
@@ -473,7 +650,7 @@ test("keeps the connection in the session that a terminal of another conversatio
 test("closes the shell of a session that is archived, and the session that it leaves empty", async () => {
     const server = serve();
     // The session is one that this module made, as a run that a crash ended would have written it down.
-    const fake = module(server, { ledger: { [server.url]: ["session:1"] } });
+    const fake = module(server, { ledger: ledgerFor(server) });
 
     await open(fake, server);
 
@@ -499,7 +676,7 @@ test("closes the shell of a session that is archived, and the session that it le
 test("keeps the session that another program is still in, when the conversation is archived", async () => {
     // A person put a window of their own in Pi Pocket's session, with a program that is not this module's.
     const server = serve({ windows: { "session:1": [here(), editor] } });
-    const fake = module(server, { ledger: { [server.url]: ["session:1"] } });
+    const fake = module(server, { ledger: ledgerFor(server) });
 
     await open(fake, server);
 
@@ -564,7 +741,7 @@ test("sends a key with the modifiers in the order that Rex reads them", () => {
 
 test("makes the Pi Pocket session when the machine has none", async () => {
     const server = serve({ sessions: [], windows: {} });
-    const fake = module(server);
+    const fake = module(server, { ledger: {} });
 
     server.requests.length = 0;
 
@@ -594,6 +771,151 @@ test("comes back to the window that already carries the conversation's name", as
     expect(methods(server)).not.toContain("session.create");
     expect(methods(server)).not.toContain("session.new_window");
     expect(answer.terminal).toMatchObject({ session: "session:1", block: "block:1", windowLabel: "Here" });
+});
+
+test("comes back to the window that the ledger holds for the conversation", async () => {
+    const server = serve();
+    const fake = module(server);
+
+    server.requests.length = 0;
+
+    const answer = await open(fake, server);
+
+    // The ledger says which window is the conversation's, so the page comes back to that one.
+    expect(methods(server)).not.toContain("session.new_window");
+    expect(answer.terminal).toMatchObject({ session: "session:1", block: "block:1" });
+    expect(conversationsOf(fake.state)[server.url]?.["7"]).toMatchObject({
+        session: "session:1",
+        window: "window:1",
+        block: "block:1",
+    });
+});
+
+test("gives a conversation of the same name a window of its own", async () => {
+    // Two conversations that a person gave the same name, in two worktrees: the name alone does not say which window
+    // is whose, so the ledger does.
+    const server = serve();
+    const fake = module(server, {
+        sessions: [
+            { id: 7, cwd: root },
+            { id: 8, cwd: root, title: "Here" },
+        ],
+    });
+
+    await open(fake, server, { conversation: 7 });
+    server.requests.length = 0;
+
+    const answer = await open(fake, server, { conversation: 8 });
+
+    // The second conversation does not get the shell of the first one, so it gets a window of its own.
+    expect(server.requests.find((each) => each.method === "session.new_window")!.payload).toMatchObject({
+        session_id: "session:1",
+    });
+    expect(answer.terminal).toMatchObject({ block: "block:made-1" });
+    expect(answer.terminal.block).not.toBe("block:1");
+    expect(conversationsOf(fake.state)[server.url]?.["8"]).toMatchObject({ block: "block:made-1" });
+});
+
+test("makes a window again, when Rex no longer holds the window of the conversation", async () => {
+    // A person closed the window in Rex, so the ledger names a window that is not there any more.
+    const server = serve({ windows: {} });
+    const fake = module(server, { ledger: ledgerFor(server) });
+
+    server.requests.length = 0;
+
+    const answer = await open(fake, server);
+
+    // The window is gone, so the conversation gets a new one, and the ledger names that one.
+    expect(server.requests.find((each) => each.method === "session.new_window")!.payload).toMatchObject({
+        session_id: "session:1",
+        window_label: "Here",
+    });
+    expect(answer.terminal).toMatchObject({ block: "block:made-1" });
+    expect(conversationsOf(fake.state)[server.url]?.["7"]?.window).not.toBe("window:1");
+});
+
+test("does not take the window of another conversation, that a person made in Rex", async () => {
+    // A window that carries the conversation's name, but that this module did not make: a person made it in Rex.
+    const server = serve();
+    const fake = module(server, { ledger: { [server.url]: { blocks: {}, conversations: {} } } });
+
+    server.requests.length = 0;
+
+    const answer = await open(fake, server);
+
+    expect(server.requests.find((each) => each.method === "session.new_window")!.payload).toMatchObject({
+        window_label: "Here 2",
+    });
+    expect(answer.terminal).toMatchObject({ block: "block:made-1" });
+});
+
+test("works in the session that the windows of its conversations are in, when two carry the name", async () => {
+    // Two sessions that a person sees as Pi Pocket: the module's windows are in one of them, and that one comes first.
+    const server = serve({
+        sessions: [
+            { session_id: "session:old", label: "Pi Pocket" },
+            { session_id: "session:1", label: "Pi Pocket" },
+        ],
+    });
+    const fake = module(server, { ledger: ledgerFor(server) });
+
+    server.requests.length = 0;
+
+    const answer = await open(fake, server);
+
+    expect(answer.terminal).toMatchObject({ session: "session:1", block: "block:1" });
+    expect(server.requests.find((each) => each.method === "session.attach")!.payload).toMatchObject({
+        session_id: "session:1",
+    });
+});
+
+test("makes a window again, when the conversation moved to another folder", async () => {
+    // The conversation that the ledger holds a window for runs in another folder now, so the shell that it had is
+    // not the shell of this conversation.
+    const server = serve();
+    const fake = module(server, { sessions: [{ id: 7, cwd: join(root, "elsewhere") }] });
+
+    server.requests.length = 0;
+
+    const answer = await open(fake, server);
+
+    expect(server.requests.find((each) => each.method === "session.new_window")!.payload).toMatchObject({
+        session_id: "session:1",
+    });
+    expect(answer.terminal).toMatchObject({ block: "block:made-1" });
+    expect(conversationsOf(fake.state)[server.url]?.["7"]).toMatchObject({
+        block: "block:made-1",
+        folder: join(root, "elsewhere"),
+    });
+});
+
+test("names the window of a conversation after the conversation again, when it was renamed", async () => {
+    const server = serve();
+    const fake = module(server, { sessions: [{ id: 7, cwd: root, title: "Elsewhere" }] });
+
+    server.requests.length = 0;
+
+    await open(fake, server);
+
+    // The name of a window is the name of its conversation, and a person reads both.
+    expect(server.requests.find((each) => each.method === "session.set_window_label")!.payload).toMatchObject({
+        session_id: "session:1",
+        window_id: "window:1",
+        label: "Elsewhere",
+    });
+    expect(conversationsOf(fake.state)[server.url]?.["7"]).toMatchObject({ title: "Elsewhere" });
+});
+
+test("keeps the name that a person gave a window in Rex", async () => {
+    const server = serve({ windows: { "session:1": [{ window_id: "window:1", label: "Mine", blocks: here().blocks }] } });
+    const fake = module(server);
+
+    server.requests.length = 0;
+
+    await open(fake, server);
+
+    // A person named the window in Rex, and the conversation did not change, so the module leaves the name alone.
+    expect(methods(server)).not.toContain("session.set_window_label");
 });
 
 test("gives a conversation of another name a window of its own", async () => {
@@ -652,7 +974,7 @@ test("starts a window for the picker's own row, and says where it is", async () 
 test("remembers the session that it made, with the shells that it opened in it", async () => {
     // A machine that ran Rex before this module: the session is the module's to make.
     const server = serve({ sessions: [], windows: {} });
-    const fake = module(server);
+    const fake = module(server, { ledger: {} });
 
     // The conversation's own shell, and the picker's own row: one session holds both of them.
     const own = await fake.call<{ terminal: Summary }>({
@@ -716,6 +1038,9 @@ test("starts another window in the same folder when the bar asks for a new shell
     });
     expect(second.terminal.session).toBe(first.terminal.session);
     expect(second.terminal.block).not.toBe(first.terminal.block);
+
+    // The conversation still comes back to the first window, and the second one is only in Rex.
+    expect(conversationsOf(fake.state)[server.url]?.["7"]).toMatchObject({ block: first.terminal.block });
 });
 
 /**
@@ -740,8 +1065,8 @@ describe("the tabs of the app", () => {
             const alone = serve();
             const shared = serve({ windows: { "session:1": [here(), editor] } });
             // Each remembers the session that it watched, as a run that a crash ended would.
-            const mine = module(alone, { ledger: { [alone.url]: ["session:1"] } });
-            const theirs = module(shared, { ledger: { [shared.url]: ["session:1"] } });
+            const mine = module(alone, { ledger: ledgerFor(alone) });
+            const theirs = module(shared, { ledger: ledgerFor(shared) });
 
             await open(mine, alone);
             await open(theirs, shared);
@@ -810,7 +1135,7 @@ describe("the tabs of the app", () => {
      */
     test("ends the session that a tab which died left empty, when the next tab says hello", async () => {
         const server = serve({ windows: {} });
-        const fake = module(server, { ledger: { [server.url]: ["session:1"] } });
+        const fake = module(server, { ledger: sessionLedger(server) });
 
         server.requests.length = 0;
 
@@ -826,7 +1151,7 @@ describe("the tabs of the app", () => {
     test("closes the block that a tab which died left, and keeps the session that holds another block", async () => {
         const server = serve({ windows: { "session:1": [here(), editor] } });
         // The shell of a tab that died: the ledger knows the block, and no terminal holds it any more.
-        const fake = module(server, { ledger: { [server.url]: { "session:1": ["block:1"] } } });
+        const fake = module(server, { ledger: { [server.url]: { blocks: { "session:1": ["block:1"] }, conversations: {} } } });
 
         await said(fake, "tabs", { tab: "phone" });
         await until(server, "block.close");
@@ -842,9 +1167,40 @@ describe("the tabs of the app", () => {
         expect(ledgerOf(fake.state)).toEqual({ [server.url]: { "session:1": [] } });
     }, 30_000);
 
+    test("attaches to the session before it closes a block in it", async () => {
+        const server = serve({ windows: { "session:1": [here(), editor] } });
+        const fake = module(server, { ledger: { [server.url]: { blocks: { "session:1": ["block:1"] }, conversations: {} } } });
+
+        await said(fake, "tabs", { tab: "phone" });
+        await until(server, "block.close");
+
+        // Rex refuses to close a block in a session that the connection is not attached to, so the look attaches
+        // first. A block that the look cannot close stays in the ledger, and the shell of a dead tab stays in Rex.
+        const attach = server.requests.findIndex((each) => each.method === "session.attach");
+        const close = server.requests.findIndex((each) => each.method === "block.close");
+
+        expect(attach).toBeGreaterThanOrEqual(0);
+        expect(close).toBeGreaterThan(attach);
+        expect(ledgerOf(fake.state)).toEqual({ [server.url]: { "session:1": [] } });
+    }, 30_000);
+
+    test("keeps the shell of a conversation that a tab died with, so that the person comes back to it", async () => {
+        // The shell of a conversation that a tab was watching: the ledger holds the window of the conversation, and
+        // the person comes back to that shell rather than to a new one.
+        const server = serve();
+        const fake = module(server, { ledger: ledgerFor(server) });
+
+        await said(fake, "tabs", { tab: "phone" });
+        await Bun.sleep(300);
+
+        // The shell of a conversation is not an orphan, so the look leaves it alone.
+        expect(methods(server)).not.toContain("block.close");
+        expect(ledgerOf(fake.state)[server.url]?.["session:1"]).toEqual(["block:1"]);
+    }, 30_000);
+
     test("keeps the block that a terminal of this module holds", async () => {
         const server = serve();
-        const fake = module(server, { ledger: { [server.url]: { "session:1": [] } } });
+        const fake = module(server, { ledger: sessionLedger(server) });
 
         await open(fake, server);
         server.requests.length = 0;
@@ -865,7 +1221,7 @@ describe("the tabs of the app", () => {
                 return undefined;
             },
         });
-        const fake = module(server, { ledger: { [server.url]: { "session:1": ["block:1"] } } });
+        const fake = module(server, { ledger: { [server.url]: { blocks: { "session:1": ["block:1"] }, conversations: {} } } });
 
         await said(fake, "tabs", { tab: "phone" });
         await until(server, "block.close");
@@ -877,7 +1233,7 @@ describe("the tabs of the app", () => {
 
     test("leaves a session that still holds a block", async () => {
         const server = serve();
-        const fake = module(server, { ledger: { [server.url]: ["session:1"] } });
+        const fake = module(server, { ledger: sessionLedger(server) });
 
         await said(fake, "tabs", { tab: "phone" });
         await until(server, "session.detach");
@@ -888,7 +1244,7 @@ describe("the tabs of the app", () => {
 
     test("leaves an empty session that it did not make", async () => {
         const server = serve({ blocks: [] });
-        const fake = module(server);
+        const fake = module(server, { ledger: {} });
 
         await said(fake, "tabs", { tab: "phone" });
         await Bun.sleep(300);
@@ -900,7 +1256,7 @@ describe("the tabs of the app", () => {
 
     test("forgets a session that Rex no longer has", async () => {
         const server = serve({ sessions: [] });
-        const fake = module(server, { ledger: { [server.url]: ["session:gone"] } });
+        const fake = module(server, { ledger: sessionLedger(server, "session:gone") });
 
         await said(fake, "tabs", { tab: "phone" });
         await Bun.sleep(300);
@@ -911,7 +1267,7 @@ describe("the tabs of the app", () => {
 
     test("leaves the session that a terminal of its own is in", async () => {
         const server = serve();
-        const fake = module(server, { ledger: { [server.url]: ["session:1"] } });
+        const fake = module(server, { ledger: ledgerFor(server) });
 
         await open(fake, server);
         server.requests.length = 0;
@@ -926,7 +1282,7 @@ describe("the tabs of the app", () => {
 
     test("looks at the ledger once, however many tabs say hello", async () => {
         const server = serve();
-        const fake = module(server, { ledger: { [server.url]: ["session:1"] } });
+        const fake = module(server, { ledger: sessionLedger(server) });
 
         await said(fake, "tabs", { tab: "phone" });
         await until(server, "session.detach");

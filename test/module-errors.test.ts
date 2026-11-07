@@ -6,6 +6,8 @@
  * that it will not open again, and these tests are about what the module says rather than about the runner.
  */
 import { afterEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import createRex from "../extensions/rex.ts";
 import { fakeRex, type FakeRex } from "./fake-rex.ts";
@@ -13,12 +15,16 @@ import { fakeWeb, type FakeWeb } from "./fake-web.ts";
 
 const root = join(import.meta.dir, "..");
 const made: Array<FakeWeb | FakeRex> = [];
+/** The data folders that the modules in this test wrote to, each thrown away with the test that made it. */
+const states: string[] = [];
 
 afterEach(async () => {
     const all = made.splice(0);
 
     for (const each of all) if ("dispose" in each) await each.dispose();
     for (const each of all) if (!("dispose" in each)) each.stop();
+
+    for (const folder of states.splice(0)) rmSync(folder, { recursive: true, force: true });
 });
 
 function serve(): FakeRex {
@@ -33,6 +39,13 @@ function serve(): FakeRex {
 }
 
 function module(server: FakeRex, settings: Record<string, string> = {}): FakeWeb {
+    // A module remembers what it made in Pi Pocket's data folder, so a test gets a folder of its own: the tests of
+    // this repository never write into the folder of the person who runs them.
+    const state = mkdtempSync(join(tmpdir(), "rex-state-"));
+
+    process.env.PI_POCKET_DIR = state;
+    states.push(state);
+
     const fake = fakeWeb({
         settings: { local: server.url, runtime: join(root, "src"), ...settings },
         sessions: [{ id: 7, cwd: root, title: "Here", archived: false, updatedAt: 0 }],

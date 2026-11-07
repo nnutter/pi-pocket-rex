@@ -39,6 +39,8 @@ export interface FakeRex {
     sockets: Set<unknown>;
     /** The bytes that each data connection sent: a hello, or a resume. */
     dataMessages: Uint8Array[];
+    /** Sends an event to every control connection, as a Rex server does when something happens in a session. */
+    pushEvent: (event: unknown) => void;
     /** Sends bytes to every open data connection, as a terminal's program would. */
     push: (bytes: Uint8Array) => void;
     /** Closes every data connection, as a network that dropped would. */
@@ -57,6 +59,10 @@ export interface FakeRexOptions {
     windows?: Record<string, FakeWindow[]>;
     /** What `com.superlogical.terminal.format` paints: the screen that a terminal opens on. */
     screen?: string;
+    /** The name that the program in a terminal set, as `com.superlogical.terminal.title` reports it. */
+    title?: string;
+    /** The folder that the program in a terminal runs in, as `com.superlogical.terminal.process` reports it. */
+    cwd?: string;
     /** Answers one method instead of the defaults, and may throw a `RexCallError` to fail the call. */
     answer?: (method: string, payload: unknown) => unknown;
     /** Serves a terminal's data connection too, with this nonce and keep time. */
@@ -253,6 +259,9 @@ export function fakeRex(options: FakeRexOptions = {}): FakeRex {
         if (method === "block.close") {
             const asked = payload as { block_id?: string };
 
+            // Rex only lets a connection that is attached to the session close a block in it.
+            attachedTo(payload);
+
             closed.add(asked.block_id ?? "");
 
             return { block_id: asked.block_id, revision: 1 };
@@ -375,6 +384,10 @@ export function fakeRex(options: FakeRexOptions = {}): FakeRex {
         }
         if (method === "com.superlogical.terminal.format") return { content: options.screen ?? "" };
         if (method === "com.superlogical.terminal.write") return { bytes_written: String((payload as { args?: { data?: string } }).args?.data ?? "").length };
+        if (method === "com.superlogical.terminal.title") return { title: options.title ?? "" };
+        if (method === "com.superlogical.terminal.process") {
+            return { foreground: { pid: 1, name: "zsh", cwd: options.cwd ?? process.cwd() } };
+        }
 
         return { ok: method };
     }
@@ -388,6 +401,10 @@ export function fakeRex(options: FakeRexOptions = {}): FakeRex {
         dataMessages,
         push: (bytes) => {
             for (const socket of dataSockets) (socket as { send: (value: Uint8Array) => void }).send(bytes);
+        },
+        // An event to every control connection, as a Rex server sends one when something happens in a session.
+        pushEvent: (event) => {
+            for (const socket of sockets) (socket as { send: (value: string) => void }).send(JSON.stringify({ type: "event", payload: event }));
         },
         // 1001 is a connection that went away: not a stream that the block ended, which a resume must not restart.
         drop: () => {
