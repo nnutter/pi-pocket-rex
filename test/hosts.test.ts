@@ -3,18 +3,24 @@
  * name, each with the sessions under it, and a word for the one that will not answer.
  */
 import { afterEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import createRex from "../extensions/rex.ts";
 import { fakeRex, type FakeRex } from "./fake-rex.ts";
 import { fakeWeb, type FakeWeb } from "./fake-web.ts";
 
 const made: Array<FakeWeb | FakeRex> = [];
+/** The data folders that the modules in this test wrote to, each thrown away with the test that made it. */
+const states: string[] = [];
 
 afterEach(async () => {
     for (const each of made.splice(0)) {
         if ("dispose" in each) await each.dispose();
         else each.stop();
     }
+
+    for (const folder of states.splice(0)) rmSync(folder, { recursive: true, force: true });
 });
 
 function serve(options: Parameters<typeof fakeRex>[0] = {}): FakeRex {
@@ -26,6 +32,13 @@ function serve(options: Parameters<typeof fakeRex>[0] = {}): FakeRex {
 }
 
 function module(settings: Record<string, string> = {}): FakeWeb {
+    // A module remembers what it made in Pi Pocket's data folder, so a test gets a folder of its own: the tests of
+    // this repository never write into the folder of the person who runs them.
+    const state = mkdtempSync(join(tmpdir(), "rex-state-"));
+
+    process.env.PI_POCKET_DIR = state;
+    states.push(state);
+
     const fake = fakeWeb({ settings });
 
     made.push(fake);

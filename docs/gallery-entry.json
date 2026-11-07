@@ -18,7 +18,7 @@
     "version": "0.1.0",
     "source": {
         "repo": "nnutter/pi-pocket-rex",
-        "commit": "3ca4665e500b4219f4b35ea1c42dec0e402cfc62",
+        "commit": "a511a4ac9cd8aeaac7a899a5836f17f574aa8d87",
         "path": "extensions"
     },
     "files": [
