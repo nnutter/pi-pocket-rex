@@ -64,6 +64,9 @@ const MAX_TERMINALS = 8;
 /** How long a terminal that ended stays in the list, so its page can say what happened. */
 const KEEP_ENDED_MS = 15 * 60_000;
 
+/** How long the name that a shell gives itself is kept, before Rex is asked for it again. */
+const TITLE_TTL_MS = 60_000;
+
 /** How long a runner has to say that its screen is up. */
 const RUNNER_START_MS = 10_000;
 
@@ -96,6 +99,11 @@ interface Terminal {
     rows: number;
     createdAt: number;
     title: string;
+    /**
+     * The name that the program in the shell gives itself, for a shell that this module did not make: the name of
+     * the window is the person’s own, and the shell’s own name says what runs in it.
+     */
+    shellTitle: string;
     alive: boolean;
     /** When the terminal ended, so that the list can let it go after a while. */
     endedAt: number | null;
@@ -177,6 +185,9 @@ export default function createRex(_host: Host | null, web: Web) {
      * sessions that they leave empty go with them.
      */
     const tabs = new Set<string>();
+
+    /** The name that each shell gives itself, by the block that it runs in, and when Rex was last asked for it. */
+    const shellTitles = new Map<string, { title: string; at: number }>();
 
     /** The goodbye that waits for a tab to come back, while one waits. */
     let leaving: ReturnType<typeof setTimeout> | null = null;
@@ -760,6 +771,65 @@ export default function createRex(_host: Host | null, web: Web) {
     }
 
     /**
+     * The name that a shell gives itself: the name that the program in it set, or the folder that it runs in when it
+     * set none.
+     *
+     * Rex knows both. The name is the one that a program sets with the escape sequence that names a window, such as
+     * an editor that says which file it has open. The folder is where the program runs, which says what the shell is
+     * for when the program says nothing.
+     */
+    async function shellTitleOf(client: RexClient, sessionId: string, blockId: string): Promise<string> {
+        const known = shellTitles.get(blockId);
+
+        // The name that a program gives itself changes when the program says so, and the list of the sessions reads
+        // again every few seconds: the name is asked for again now and then, and not on every read.
+        if (known !== undefined && Date.now() - known.at < TITLE_TTL_MS) return known.title;
+
+        const named = await client
+            .call<{ title?: string }>(`${TERMINAL_CREATOR}.title`, {
+                session_id: sessionId,
+                block_id: blockId,
+                args: {},
+            })
+            .then((answer) => (answer.title ?? "").trim())
+            .catch(() => "");
+
+        if (named !== "") {
+            shellTitles.set(blockId, { title: named, at: Date.now() });
+
+            return named;
+        }
+
+        const running = await client
+            .call<{ foreground?: { cwd?: string } }>(`${TERMINAL_CREATOR}.process`, {
+                session_id: sessionId,
+                block_id: blockId,
+                args: {},
+            })
+            .then((answer) => answer.foreground?.cwd ?? "")
+            .catch(() => "");
+
+        const folder = shortPath(running);
+
+        shellTitles.set(blockId, { title: folder, at: Date.now() });
+
+        return folder;
+    }
+
+    /**
+     * A path that a person can read at a glance: the last three of its parts, and a mark that there were more.
+     */
+    function shortPath(path: string): string {
+        const parts = path.split("/").filter((each) => each !== "");
+
+        if (parts.length === 0) return path;
+
+        const last = parts.slice(-3);
+
+        return last.length < parts.length ? `…/${last.join("/")}` : last.join("/");
+    }
+
+    /**
      * A new window in the Pi Pocket session, with one shell in it, named after the conversation that asked for it.
      *
      * The window carries the conversation's name, so that a person looking at Rex sees which conversation each window
@@ -955,12 +1025,24 @@ export default function createRex(_host: Host | null, web: Web) {
             await client.call("session.attach", { session_id: sessionId });
 
             const windows = (await view(client, sessionId)).windows ?? [];
+            const made = madeWindows(hostKey);
 
-            const listed = windows.map((window) => ({
-                id: window.window_id,
-                label: (window.label ?? "").trim(),
-                block: shellIn(window)?.block_id ?? "",
-            }));
+            const listed = await Promise.all(
+                windows.map(async (window) => {
+                    const shell = shellIn(window);
+                    const block = shell?.block_id ?? "";
+
+                    // A window that this module made carries the name of its conversation. A window that a person
+                    // made carries the name that the program in it gives itself, so that the list says what runs in
+                    // it rather than "Window 436d154c".
+                    const label =
+                        made.has(window.window_id) || block === ""
+                            ? (window.label ?? "").trim()
+                            : await shellTitleOf(client, sessionId, block);
+
+                    return { id: window.window_id, label, block };
+                }),
+            );
 
             if (!held(hostKey, sessionId)) await stepOut(client, sessionId);
 
@@ -968,6 +1050,15 @@ export default function createRex(_host: Host | null, web: Web) {
         } catch {
             return [];
         }
+    }
+
+    /** The windows that this module made on a machine, which the ledger names for the conversations that got them. */
+    function madeWindows(hostKey: string): Set<string> {
+        const made = new Set<string>();
+
+        for (const found of ledger.get(hostKey)?.conversations.values() ?? []) made.add(found.window);
+
+        return made;
     }
 
     /** The terminal that a Rex block belongs to, when this module has one. */
@@ -1009,6 +1100,10 @@ export default function createRex(_host: Host | null, web: Web) {
             hostLabel: terminal.hostLabel,
             session: terminal.sessionId,
             windowLabel: terminal.windowLabel,
+            /** Whether this module opened the shell, or only watches the one that Rex already had. */
+            owned: terminal.owned,
+            /** The name that the terminal shows: the name of the window, or the name that the shell gives itself. */
+            shellTitle: displayTitle(terminal),
             block: terminal.blockId,
             cols: terminal.cols,
             rows: terminal.rows,
@@ -1018,6 +1113,14 @@ export default function createRex(_host: Host | null, web: Web) {
             signal: terminal.signal,
             createdAt: terminal.createdAt,
         };
+    }
+
+    /**
+     * The name that a terminal shows: the name of the window for a shell that this module made, and the name that the
+     * shell gives itself for one that it did not.
+     */
+    function displayTitle(terminal: Terminal): string {
+        return terminal.owned ? terminal.windowLabel : terminal.shellTitle;
     }
 
     /** The whole screen, for a page that just opened or reloaded. */
@@ -1036,7 +1139,7 @@ export default function createRex(_host: Host | null, web: Web) {
     }
 
     function tell(terminal: Terminal, frame: Frame): void {
-        web.send("frame", { id: terminal.id, frame });
+        web.send("frame", { id: terminal.id, frame, title: displayTitle(terminal) });
     }
 
     /** Takes one JSON line from the runner: a frame, a word about the program, or an answer to give the terminal. */
@@ -1056,6 +1159,13 @@ export default function createRex(_host: Host | null, web: Web) {
             terminal.cols = frame.cols;
             terminal.rows = frame.rows;
             terminal.title = frame.title;
+
+            // The name that the program gives itself: a shell that this module did not make shows it, and one that it
+            // made keeps the name of the conversation.
+            if (!terminal.owned && frame.title !== "") {
+                terminal.shellTitle = frame.title;
+                shellTitles.set(terminal.blockId, { title: frame.title, at: Date.now() });
+            }
             terminal.cursor = frame.cursor;
             terminal.alt = frame.alt;
             terminal.scrollback = frame.scroll?.scrollback ?? 0;
@@ -1240,6 +1350,10 @@ export default function createRex(_host: Host | null, web: Web) {
             args: { columns: cols, rows },
         });
 
+        // A shell that this module did not make has no name of its own that the module knows: the name that the
+        // program in it gives itself, or the folder that it runs in.
+        const shellTitle = shell.owned ? "" : await shellTitleOf(client, sessionId, blockId);
+
         const terminal: Terminal = {
             id: randomUUID(),
             conversation,
@@ -1254,6 +1368,7 @@ export default function createRex(_host: Host | null, web: Web) {
             rows,
             createdAt: Date.now(),
             title: "",
+            shellTitle,
             alive: true,
             endedAt: null,
             exitCode: null,

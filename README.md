@@ -78,9 +78,18 @@ another machine and the terminal opens this conversation's window there. Tap a w
 in that window. From then on `Control+Backquote` returns to the same one, and the bar says which machine and window it
 is. Tap **This conversation's own terminal**, at the top of the list, to come back to this machine.
 
+A window that a person made in Rex carries the name that the program in it gives itself, such as the file that an
+editor has open, or the folder that it runs in when the program gives no name. The folder is short: its last three
+parts, and a mark that there were more. A window that Pi Pocket made carries the name of its conversation.
+
 A shell that was open before keeps running in Rex when another one is chosen: the terminal only stops watching it. A
 window that the terminal only watches is never closed by Pi Pocket, not when the terminal goes, and not when the
 conversation is archived: that shell belongs to the program that was in it.
+
+The bar names the shell that it shows. A shell that Pi Pocket made carries the name of its conversation. A shell that
+the module only watches carries the name that the program in it gives itself, such as the file that an editor has open,
+or the folder that it runs in when the program gives no name. The folder is short: its last three parts, and a mark
+that there were more.
 
 ## How it is put together
 

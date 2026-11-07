@@ -59,6 +59,10 @@ export interface FakeRexOptions {
     windows?: Record<string, FakeWindow[]>;
     /** What `com.superlogical.terminal.format` paints: the screen that a terminal opens on. */
     screen?: string;
+    /** The name that the program in a terminal set, as `com.superlogical.terminal.title` reports it. */
+    title?: string;
+    /** The folder that the program in a terminal runs in, as `com.superlogical.terminal.process` reports it. */
+    cwd?: string;
     /** Answers one method instead of the defaults, and may throw a `RexCallError` to fail the call. */
     answer?: (method: string, payload: unknown) => unknown;
     /** Serves a terminal's data connection too, with this nonce and keep time. */
@@ -380,6 +384,10 @@ export function fakeRex(options: FakeRexOptions = {}): FakeRex {
         }
         if (method === "com.superlogical.terminal.format") return { content: options.screen ?? "" };
         if (method === "com.superlogical.terminal.write") return { bytes_written: String((payload as { args?: { data?: string } }).args?.data ?? "").length };
+        if (method === "com.superlogical.terminal.title") return { title: options.title ?? "" };
+        if (method === "com.superlogical.terminal.process") {
+            return { foreground: { pid: 1, name: "zsh", cwd: options.cwd ?? process.cwd() } };
+        }
 
         return { ok: method };
     }

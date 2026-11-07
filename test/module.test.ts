@@ -516,6 +516,37 @@ test("opens the shell of the conversation, when the session that a person picked
     expect(answer.terminal).toMatchObject({ session: "session:1", block: "block:1" });
 });
 
+test("names a shell that this module did not make, by the name that the program gives itself", async () => {
+    // A shell that a person started in Rex: the window is the person's own, and the name that the program gives itself
+    // says what runs in it.
+    const server = serve({ windows: { "session:1": [here(), theirs()] }, title: "vim README.md" });
+    const fake = module(server);
+
+    const { terminal } = await open(fake, server, { session: "session:1", block: "block:2" });
+
+    expect(terminal).toMatchObject({ shellTitle: "vim README.md", owned: false });
+});
+
+test("names a shell that this module did not make, by the folder that it runs in, when it gives no name", async () => {
+    // A shell with no name of its own: the folder that it runs in says what it is for.
+    const server = serve({ windows: { "session:1": [here(), theirs()] }, cwd: "/home/nnutter/worktrees/nnutter/ni/ni/ni" });
+    const fake = module(server);
+
+    const { terminal } = await open(fake, server, { session: "session:1", block: "block:2" });
+
+    // The folder is short enough to read: the last three of its parts.
+    expect(terminal).toMatchObject({ shellTitle: "…/ni/ni/ni" });
+});
+
+test("keeps the name of the conversation, for a shell that this module made", async () => {
+    const server = serve({ title: "vim README.md" });
+    const fake = module(server);
+
+    const { terminal } = await open(fake, server);
+
+    expect(terminal).toMatchObject({ shellTitle: "Here", owned: true });
+});
+
 test("shows the shell of a window that Rex already holds, without taking it from Rex", async () => {
     const server = serve({ windows: { "session:1": [here(), theirs()] } });
     const fake = module(server);

@@ -1097,7 +1097,7 @@ export class TerminalView {
 
         // Listen before the call: the first frames can come before the answer does.
         if (this.#eventStops.length === 0) this.#eventStops.push(
-            this.#pocket.on("frame", ({ id, frame }) => {
+            this.#pocket.on("frame", ({ id, frame, title }) => {
                 if (this.#id === null || id !== this.#id) {
                     this.#stashed.set(id, frame);
                     if (this.#stashed.size > 64) this.#stashed.delete(this.#stashed.keys().next().value);
@@ -1106,6 +1106,12 @@ export class TerminalView {
                 }
 
                 this.#apply(frame);
+
+                // A shell that this module did not make shows the name that the program in it gives itself, which the
+                // program can change while it runs.
+                if (typeof title === "string" && title !== "" && title !== this.#state.session) {
+                    this.#publish({ session: title });
+                }
             }),
             this.#pocket.on("exit", ({ id, code, signal }) => {
                 if (id !== this.#id) return;
@@ -1174,7 +1180,9 @@ export class TerminalView {
                 // Which Rex session this is: the page around the panel says which Pi Pocket session it is, and those
                 // are not the same thing.
                 host: answer.terminal.hostLabel ?? "",
-                session: answer.terminal.windowLabel ?? "",
+                // The name of the window that holds the shell, or the name that the shell gives itself when this
+                // module did not make it.
+                session: answer.terminal.shellTitle ?? answer.terminal.windowLabel ?? "",
                 cwd: answer.terminal.cwd,
                 alive: answer.terminal.alive,
                 exitCode: answer.terminal.exitCode,
